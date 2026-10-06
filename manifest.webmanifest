@@ -1,0 +1,16 @@
+{
+  "name": "N2 study",
+  "short_name": "N2",
+  "description": "JLPT N2 study. Words you add yourself. Offline after the first load.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#fbf4f6",
+  "theme_color": "#a84d6a",
+  "lang": "en-GB",
+  "icons": [
+    {"src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "icons/icon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any"}
+  ]
+}

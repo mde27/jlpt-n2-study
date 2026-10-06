@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#a84d6a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>N2 study</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <div class="brand">N2 study<small>Words you add · chapters you paste</small></div>
+    <button type="button" id="furi" aria-pressed="false">Furigana</button>
+  </header>
+  <main id="app"></main>
+  <nav class="nav" id="nav" aria-label="Sections">
+    <a href="#today"><span class="nav-ico" aria-hidden="true">◎</span><span class="nav-lbl">Today</span></a>
+    <a href="#chapters"><span class="nav-ico" aria-hidden="true">文</span><span class="nav-lbl">Chaps</span></a>
+    <a href="#combos"><span class="nav-ico" aria-hidden="true">組</span><span class="nav-lbl">Combos</span></a>
+    <a href="#wrong"><span class="nav-ico" aria-hidden="true">✗</span><span class="nav-lbl">Wrong</span></a>
+    <a href="#stats"><span class="nav-ico" aria-hidden="true">▣</span><span class="nav-lbl">Stats</span></a>
+    <a href="#add"><span class="nav-ico" aria-hidden="true">＋</span><span class="nav-lbl">Add</span></a>
+    <a href="#grammar"><span class="nav-ico" aria-hidden="true">法</span><span class="nav-lbl">Gram</span></a>
+  </nav>
+  <script src="data/combos.js" defer></script>
+  <script src="data/reading.js" defer></script>
+  <script src="data/listening.js" defer></script>
+  <script src="data/mock.js" defer></script>
+  <script src="app.js" defer></script>
+</body>
+</html>
