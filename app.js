@@ -126,6 +126,42 @@ function parsePaste(text) {
   return { rows: rows, skipped: skipped };
 }
 
+/* Add-word bulk paste. Blocks separated by blank lines, 3-4 lines each:
+   word / reading / meaning / optional example. A single line "word | reading | meaning | example"
+   (or tab-separated) also works. Commas are NOT separators here, so "plain, sober" stays one meaning. */
+function parseBulkWords(text) {
+  var rows = [];
+  var bad = [];
+  String(text || "").replace(/\r\n?/g, "\n").split(/\n[ \t\u3000]*\n/).forEach(function (block) {
+    var lines = block.split("\n").map(function (l) { return l.replace(/^[\s\u3000]+|[\s\u3000]+$/g, ""); }).filter(Boolean);
+    var loose = [];
+    function flush() {
+      if (!loose.length) return;
+      if (loose.length >= 3 && loose.length <= 4) {
+        rows.push({ kanji: loose[0], reading: loose[1], english: loose[2], example: loose[3] || "" });
+      } else bad.push(loose[0]);
+      loose = [];
+    }
+    lines.forEach(function (line) {
+      var hasTab = line.indexOf("\t") !== -1;
+      if (hasTab || /[|\uFF5C]/.test(line)) {
+        flush();
+        var parts = line.split(hasTab ? "\t" : /[|\uFF5C]/).map(function (x) { return x.trim(); });
+        while (parts.length && parts[parts.length - 1] === "") parts.pop();
+        if (parts.length >= 3 && parts[0] && parts[1] && parts[2]) {
+          rows.push({ kanji: parts[0], reading: parts[1], english: parts[2], example: parts.slice(3).join(" ").trim() });
+        } else bad.push(line);
+      } else loose.push(line);
+    });
+    flush();
+  });
+  return { rows: rows, bad: bad };
+}
+
+function wordKey(kanji, reading) {
+  return String(kanji || "").trim() + "\u0000" + String(reading || "").trim();
+}
+
 /* Grammar paste: pattern | meaning | usage [| example] — tab, comma, or | */
 function splitGrammarPasteLine(line) {
   var s = String(line || "").trim();
@@ -217,7 +253,8 @@ function buildQueue(progress, today) {
   }).sort(function (a, b) {
     return a.due < b.due ? -1 : a.due > b.due ? 1 : String(a.addedAt).localeCompare(String(b.addedAt));
   }).forEach(function (w) { push(w.id); });
-  words.filter(function (w) { return w.addedDay === today && !w.lastDay; })
+  /* New words wait in line (20 a day) until first studied, so a big paste is never stranded. */
+  words.filter(function (w) { return !w.lastDay && (w.addedDay || "") <= today; })
     .sort(function (a, b) { return String(a.addedAt).localeCompare(String(b.addedAt)); })
     .slice(0, 20)
     .forEach(function (w) { push(w.id); });
@@ -226,7 +263,7 @@ function buildQueue(progress, today) {
 
 function newItemCount(progress, today) {
   var n = (progress.words || []).filter(function (w) {
-    return w.addedDay === today && !w.lastDay;
+    return !w.lastDay && (w.addedDay || "") <= today;
   }).length;
   return Math.min(20, n);
 }
@@ -273,7 +310,7 @@ if (typeof document !== "undefined") {
   var furiBtn = document.getElementById("furi");
   var furigana = localStorage.getItem(FURI_KEY) === "1";
   var session = loadSession();
-  var ui = { readingId: null, scripts: {}, mock: null, mockPaper: "short", chapterId: null, pasteMsg: null, chFlash: null, chQuiz: null, editMsg: null, comboLevel: null, comboChunk: null, gChapterId: null, gPasteMsg: null, gEditMsg: null, gFlash: null, gQuiz: null };
+  var ui = { readingId: null, scripts: {}, mock: null, mockPaper: "short", chapterId: null, pasteMsg: null, chFlash: null, chQuiz: null, editMsg: null, comboLevel: null, comboChunk: null, gChapterId: null, gPasteMsg: null, gEditMsg: null, gFlash: null, gQuiz: null, bulkDraft: "", bulkMsg: null };
 
   function normalizeProgress(data) {
     if (!data || !Array.isArray(data.words)) return blankProgress();
@@ -1380,11 +1417,45 @@ if (typeof document !== "undefined") {
     html += '<label for="example">Example, if you have one</label><textarea id="example" name="example" lang="ja"></textarea>';
     html += '<p><button type="submit" class="primary">Save word</button></p>';
     html += "</form>";
+    html += '<h2 id="bulk-title">Paste many words</h2>';
+    html += '<p class="note">Paste a whole list at once. Leave a blank line between words. Each word is 3 or 4 lines:<br>word<br>reading<br>meaning<br>example (optional)<br>One line also works: word | reading | meaning | example. Words you already have (same word and reading) are skipped.</p>';
+    html += '<label for="bulk-box">Your list</label>';
+    html += '<textarea id="bulk-box" class="bulk-box" lang="ja" autocomplete="off" placeholder="燃料\nねんりょう\nfuel\n昔の列車は、石炭が主な燃料だった。\n\n沈む\nしずむ\nto sink">' + esc(ui.bulkDraft || "") + "</textarea>";
+    html += '<p id="bulk-preview" class="bulk-preview" aria-live="polite">' + esc(bulkPreviewText(ui.bulkDraft || "")) + "</p>";
+    html += '<div class="paste-actions"><button type="button" class="primary" data-act="bulk-add">Add all words</button></div>';
+    if (ui.bulkMsg) html += '<p class="bulk-msg" role="status">' + esc(ui.bulkMsg) + "</p>";
     html += "<h2>Move words</h2>";
     html += "<p>Export saves words, vocab chapters, grammar chapters, mistakes, and stats as jlpt-n2-progress.json. Data is also kept in localStorage and IndexedDB on this device. Import replaces them here.</p>";
     html += '<button type="button" class="secondary" data-act="export">Export backup</button>';
     html += '<p><input id="import-file" type="file" accept="application/json"></p>';
     main.innerHTML = html;
+  }
+
+  function existingWordKeys() {
+    var seen = {};
+    (progress.words || []).forEach(function (w) { if (w) seen[wordKey(w.kanji, w.reading)] = 1; });
+    return seen;
+  }
+  function bulkCount(text) {
+    var parsed = parseBulkWords(text);
+    var seen = existingWordKeys();
+    var fresh = 0, dup = 0;
+    parsed.rows.forEach(function (r) {
+      var k = wordKey(r.kanji, r.reading);
+      if (seen[k]) dup += 1;
+      else { seen[k] = 1; fresh += 1; }
+    });
+    return { parsed: parsed, found: parsed.rows.length, fresh: fresh, dup: dup };
+  }
+  function bulkPreviewText(text) {
+    if (!String(text || "").trim()) return "Nothing pasted yet.";
+    var c = bulkCount(text);
+    var msg = c.found + " word" + (c.found === 1 ? "" : "s") + " found";
+    if (c.dup) msg += " · " + c.dup + " already saved, will be skipped";
+    if (c.found) msg += " · " + c.fresh + " will be added";
+    msg += ".";
+    if (c.parsed.bad.length) msg += " Could not read " + c.parsed.bad.length + " part" + (c.parsed.bad.length === 1 ? "" : "s") + " (starting “" + c.parsed.bad[0] + "”). Check for a missing blank line.";
+    return msg;
   }
 
   function partsHtml(parts) {
@@ -1829,6 +1900,47 @@ if (typeof document !== "undefined") {
         if ((location.hash || "") !== "#combos") location.hash = "#combos";
         else render();
       } else render();
+      return;
+    }
+    if (act === "bulk-add") {
+      var bulkBox = document.getElementById("bulk-box");
+      if (!bulkBox) return;
+      /* Fold in anything another tab/app copy saved first, so duplicates are judged against everything. */
+      progress = mergeProgress(progress, readLocalParsed());
+      var bc = bulkCount(bulkBox.value);
+      if (!bc.found) {
+        ui.bulkDraft = bulkBox.value;
+        ui.bulkMsg = "No words found. Leave a blank line between words, 3 or 4 lines each.";
+        render();
+        return;
+      }
+      var bulkSeen = existingWordKeys();
+      var bulkAt = Date.now();
+      var bulkAdded = 0;
+      bc.parsed.rows.forEach(function (row, i) {
+        var k = wordKey(row.kanji, row.reading);
+        if (bulkSeen[k]) return;
+        bulkSeen[k] = 1;
+        progress.words.push({
+          id: newId("w"),
+          kanji: row.kanji,
+          reading: row.reading,
+          english: row.english,
+          example: row.example || "",
+          addedDay: today,
+          addedAt: new Date(bulkAt + i).toISOString(),
+          lastResult: null,
+          lastDay: null,
+          due: null,
+          streak: 0,
+          interval: 0
+        });
+        bulkAdded += 1;
+      });
+      if (bulkAdded) saveProgress();
+      ui.bulkMsg = "Added " + bulkAdded + " word" + (bulkAdded === 1 ? "" : "s") + (bc.dup ? "; skipped " + bc.dup + " you already had" : "") + "." + (bc.parsed.bad.length ? " " + bc.parsed.bad.length + (bc.parsed.bad.length === 1 ? " part was" : " parts were") + " not read (starting “" + bc.parsed.bad[0] + "”); your paste is still in the box so you can fix it." : "") + (bulkAdded ? " They join Today, 20 new words a day." : "");
+      ui.bulkDraft = bc.parsed.bad.length ? bulkBox.value : "";
+      render();
       return;
     }
     if (act === "ch-paste") {
@@ -2363,6 +2475,14 @@ if (typeof document !== "undefined") {
     saveProgress();
     if (typeof form.reset === "function") form.reset();
     location.hash = "#today";
+  });
+
+  main.addEventListener("input", function (e) {
+    if (e.target.id !== "bulk-box") return;
+    ui.bulkDraft = e.target.value;
+    ui.bulkMsg = null;
+    var pv = document.getElementById("bulk-preview");
+    if (pv) pv.textContent = bulkPreviewText(e.target.value);
   });
 
   main.addEventListener("change", function (e) {

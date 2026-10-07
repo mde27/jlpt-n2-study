@@ -429,3 +429,23 @@ button.card { width: 100%; text-align: center; }
   padding-right: 4px;
 }
 .stat-scroll .item { margin-bottom: 8px; }
+
+/* Add word: paste many words */
+.bulk-box { min-height: 200px; line-height: 1.5; }
+.bulk-preview {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-weight: 600;
+}
+.bulk-msg {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--accent-soft);
+  background: var(--petal);
+  color: var(--accent);
+  font-weight: 600;
+}
