@@ -305,14 +305,14 @@ ruby rt { font-size: 0.45em; font-weight: 500; }
   .nav a { flex: 0 1 5.5rem; min-width: 4.5rem; }
 }
 label { display: block; margin: 12px 0 4px; font-weight: 650; }
-textarea, input[type="text"] {
+textarea, input[type="text"], input[type="password"] {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--card);
   padding: 8px 12px;
 }
-input[type="text"] { min-height: 48px; }
+input[type="text"], input[type="password"] { min-height: 48px; }
 textarea { min-height: 96px; }
 button.card { width: 100%; text-align: center; }
 .could {
@@ -449,3 +449,25 @@ button.card { width: 100%; text-align: center; }
   color: var(--accent);
   font-weight: 600;
 }
+
+/* Sync card */
+.sync-card {
+  margin: 20px 0 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+.sync-card h2 { margin-top: 0; }
+.sync-status {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--petal);
+  font-weight: 600;
+}
+.sync-status.is-error { background: #f9e1e5; color: var(--again); }
+.sync-status.is-offline { color: var(--hard); }
+.sync-card .small { font-size: 0.85rem; }
+.sync-card input[type="password"] { width: 100%; }

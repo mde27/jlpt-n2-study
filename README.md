@@ -47,6 +47,16 @@ On a chapter screen: rename (without re-pasting), append paste, replace all with
 
 Kanji, reading, English, and an optional example. Saved in `localStorage` under `jlpt-n2-words-v1`. Export writes `jlpt-n2-words.json` (words, chapters, mistake history, which days are complete).
 
+### Paste many words
+
+Under the single form on **Add** there is a **Paste many words** box and an **Add all words** button. Leave a blank line between words; each word is 3 or 4 lines (word, reading, meaning, optional example). One line `word | reading | meaning | example` also works. A live count (“24 words found · 24 will be added”) shows before saving. Words already saved with the same word and reading are skipped. New words wait in Today, 20 a day, until first studied.
+
+## Sync across devices
+
+Card **Sync across devices** at the bottom of **Today**. Paste a GitHub token that has only the `gist` scope (https://github.com/settings/tokens/new?scopes=gist&description=JLPT%20N2%20sync) and press **Turn on sync**, once per device. The token is stored only in that browser's localStorage (`jlpt-n2-sync-token`) and is sent only to api.github.com. The app finds or creates one secret gist with the file `jlpt-n2-study-data.json`.
+
+Each sync pulls the gist, merges it with local data (union by id, tombstones for deletes, max for stats), and pushes only if something changed. It runs on startup, on focus, every few minutes while open, 5 seconds after a change, when the app is hidden, and when the device comes back online. An empty copy never replaces non-empty data, and unreadable gist content is never overwritten. Import still replaces data on the device, but sync will merge the gist back in.
+
 Grammar, Reading, Listening, and Test stay hidden until 6 December 2026.
 
 ## Files a phone needs

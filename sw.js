@@ -1,5 +1,5 @@
 "use strict";
-var CACHE = "jlpt-n2-v17";
+var CACHE = "jlpt-n2-v18";
 var FILES = [
   "./",
   "./index.html",
@@ -33,6 +33,8 @@ self.addEventListener("fetch", function (event) {
   var req = event.request;
   if (req.method !== "GET") return;
   var sameOrigin = new URL(req.url).origin === self.location.origin;
+  /* Never touch GitHub sync calls or any other site: let the browser handle them directly. */
+  if (!sameOrigin) return;
   /* Network first so a new app.js is picked up right away; cache is only the offline fallback. */
   event.respondWith(
     fetch(req, { cache: "no-cache" }).then(function (res) {

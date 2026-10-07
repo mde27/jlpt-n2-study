@@ -310,7 +310,7 @@ if (typeof document !== "undefined") {
   var furiBtn = document.getElementById("furi");
   var furigana = localStorage.getItem(FURI_KEY) === "1";
   var session = loadSession();
-  var ui = { readingId: null, scripts: {}, mock: null, mockPaper: "short", chapterId: null, pasteMsg: null, chFlash: null, chQuiz: null, editMsg: null, comboLevel: null, comboChunk: null, gChapterId: null, gPasteMsg: null, gEditMsg: null, gFlash: null, gQuiz: null, bulkDraft: "", bulkMsg: null };
+  var ui = { readingId: null, scripts: {}, mock: null, mockPaper: "short", chapterId: null, pasteMsg: null, chFlash: null, chQuiz: null, editMsg: null, comboLevel: null, comboChunk: null, gChapterId: null, gPasteMsg: null, gEditMsg: null, gFlash: null, gQuiz: null, bulkDraft: "", bulkMsg: null, syncMsg: null };
 
   function normalizeProgress(data) {
     if (!data || !Array.isArray(data.words)) return blankProgress();
@@ -459,11 +459,12 @@ if (typeof document !== "undefined") {
   function readLocalParsed() {
     try { var r = readLocalRaw(); return r ? normalizeProgress(JSON.parse(r)) : null; } catch (e) { return null; }
   }
-  function saveProgress() {
+  function saveProgress(quiet) {
     /* Another tab/app instance may have written since we loaded: fold its data in, never clobber it. */
     progress = mergeProgress(progress, readLocalParsed());
     writeLocal(progress);
     idbSetProgress(progress);
+    if (!quiet) scheduleSync();
   }
   window.addEventListener("storage", function (e) {
     if (e.key !== KEY || !e.newValue) return;
@@ -488,6 +489,202 @@ if (typeof document !== "undefined") {
       return "idb-unavailable";
     });
   }
+
+  /* ---- Cloud sync: one secret GitHub Gist owned by the user. The token never leaves this device
+     except to talk to api.github.com. Every sync = pull, merge (union by id, tombstones, max stats), push if needed. ---- */
+  var SYNC_TOKEN_KEY = "jlpt-n2-sync-token";
+  var SYNC_META_KEY = "jlpt-n2-sync-meta";
+  var SYNC_FILE = "jlpt-n2-study-data.json";
+  var GH_API = "https://api.github.com";
+  var syncState = { running: false, again: false, timer: null, promise: null };
+  function syncToken() { try { return localStorage.getItem(SYNC_TOKEN_KEY) || ""; } catch (e) { return ""; } }
+  function syncMeta() { try { return JSON.parse(localStorage.getItem(SYNC_META_KEY) || "{}") || {}; } catch (e) { return {}; } }
+  function setSyncMeta(patch) {
+    var m = syncMeta();
+    Object.keys(patch).forEach(function (k) { m[k] = patch[k]; });
+    try { localStorage.setItem(SYNC_META_KEY, JSON.stringify(m)); } catch (e) {}
+    updateSyncStatus();
+    return m;
+  }
+  function canonJSON(v) {
+    if (Array.isArray(v)) return "[" + v.map(canonJSON).sort().join(",") + "]";
+    if (v && typeof v === "object") {
+      return "{" + Object.keys(v).sort().filter(function (k) { return v[k] !== undefined; }).map(function (k) {
+        return JSON.stringify(k) + ":" + canonJSON(v[k]);
+      }).join(",") + "}";
+    }
+    return JSON.stringify(v === undefined ? null : v);
+  }
+  function syncErr(msg, extra) {
+    var e = new Error(msg);
+    e.userMsg = msg;
+    if (extra) Object.keys(extra).forEach(function (k) { e[k] = extra[k]; });
+    return e;
+  }
+  function ghFetch(path, opts) {
+    opts = opts || {};
+    var headers = { "Accept": "application/vnd.github+json", "Authorization": "Bearer " + syncToken() };
+    if (opts.body) headers["Content-Type"] = "application/json";
+    return fetch(GH_API + path, { method: opts.method || "GET", headers: headers, body: opts.body, cache: "no-store", keepalive: !!opts.keepalive }).then(function (res) {
+      if (res.status === 401) throw syncErr("GitHub did not accept the token. Make a new one (gist box ticked) and paste it again.", { auth: true });
+      if (res.status === 403 || res.status === 429) throw syncErr("GitHub refused (" + res.status + "): the token may be missing gist access, or too many requests. Try again in a few minutes.", { auth: res.status === 403 });
+      if (res.status === 404) throw syncErr("Not found on GitHub.", { notFound: true });
+      if (!res.ok) throw syncErr("GitHub error " + res.status + ". Will try again.");
+      return res.json();
+    });
+  }
+  function gistPayload() {
+    var files = {};
+    files[SYNC_FILE] = { content: JSON.stringify(progress) };
+    return files;
+  }
+  function findGist() {
+    var meta = syncMeta();
+    if (meta.gistId) {
+      return ghFetch("/gists/" + encodeURIComponent(meta.gistId)).then(function (g) {
+        if (g && g.files && g.files[SYNC_FILE]) return g;
+        setSyncMeta({ gistId: null });
+        return findGist();
+      }, function (e) {
+        if (e.notFound) { setSyncMeta({ gistId: null }); return findGist(); }
+        throw e;
+      });
+    }
+    function page(n) {
+      return ghFetch("/gists?per_page=100&page=" + n).then(function (list) {
+        list = Array.isArray(list) ? list : [];
+        var hits = list.filter(function (g) { return g && g.files && g.files[SYNC_FILE]; });
+        if (hits.length) {
+          hits.sort(function (a, b) { return String(a.created_at).localeCompare(String(b.created_at)); });
+          return ghFetch("/gists/" + encodeURIComponent(hits[0].id));
+        }
+        if (list.length === 100 && n < 10) return page(n + 1);
+        return ghFetch("/gists", { method: "POST", body: JSON.stringify({
+          description: "N2 study app data (words, chapters, grammar, stats). Secret gist; keep it.",
+          public: false,
+          files: gistPayload()
+        }) });
+      });
+    }
+    return page(1).then(function (g) {
+      setSyncMeta({ gistId: g.id, gistUrl: g.html_url || null });
+      return g;
+    });
+  }
+  function readRemote(g) {
+    var f = g && g.files && g.files[SYNC_FILE];
+    if (!f) return Promise.resolve(null);
+    var text = f.truncated && f.raw_url
+      ? fetch(f.raw_url, { cache: "no-store" }).then(function (r) { if (!r.ok) throw syncErr("Could not download the synced data (" + r.status + ")."); return r.text(); })
+      : Promise.resolve(f.content || "");
+    return text.then(function (t) {
+      if (!String(t).trim()) return null;
+      var data;
+      try { data = JSON.parse(t); } catch (e) { throw syncErr("The data on GitHub could not be read, so nothing was overwritten. Ask for help before syncing again."); }
+      if (!data || typeof data !== "object" || !Array.isArray(data.words)) throw syncErr("The gist does not look like N2 study data, so nothing was overwritten.");
+      return normalizeProgress(data);
+    });
+  }
+  function hasTombs(p) { return !!(p && p.deleted && Object.keys(p.deleted).length); }
+  function softRender() {
+    var a = document.activeElement;
+    if (a && main.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+    render();
+  }
+  function syncNow(reason) {
+    if (!syncToken()) return Promise.resolve("off");
+    if (syncState.running) { syncState.again = true; return syncState.promise; }
+    if (syncState.timer) { clearTimeout(syncState.timer); syncState.timer = null; }
+    if (navigator.onLine === false) {
+      setSyncMeta({ status: "offline", pending: true });
+      return Promise.resolve("offline");
+    }
+    syncState.running = true;
+    setSyncMeta({ status: "syncing" });
+    var p = findGist().then(function (g) {
+      return readRemote(g).then(function (remote) {
+        progress = mergeProgress(progress, readLocalParsed());
+        var localBefore = canonJSON(progress);
+        var remoteCanon = remote ? canonJSON(remote) : null;
+        if (remote) progress = normalizeProgress(mergeProgress(progress, remote));
+        var after = canonJSON(progress);
+        if (after !== localBefore) { writeLocal(progress); idbSetProgress(progress); }
+        var needPush = remoteCanon !== after;
+        if (needPush && progressIsEmpty(progress) && remote && !progressIsEmpty(remote) && !hasTombs(progress)) {
+          throw syncErr("Refused to replace the synced data with an empty copy.");
+        }
+        var body = needPush ? JSON.stringify({ files: gistPayload() }) : null;
+        var push = needPush
+          ? ghFetch("/gists/" + encodeURIComponent(g.id), { method: "PATCH", body: body, keepalive: reason === "hidden" && body.length < 60000 })
+          : Promise.resolve(null);
+        return push.then(function () {
+          setSyncMeta({ status: "ok", error: null, pending: false, lastSync: new Date().toISOString(), lastAction: needPush ? "sent" : "checked" });
+          if (after !== localBefore) softRender();
+          return needPush ? "pushed" : "pulled";
+        });
+      });
+    }).catch(function (e) {
+      var msg = e && e.userMsg ? e.userMsg : (navigator.onLine === false ? "Offline. Will sync when you are back online." : "Could not reach GitHub. Will try again.");
+      setSyncMeta({ status: "error", error: msg, authError: !!(e && e.auth), pending: true });
+      return "error";
+    }).then(function (r) {
+      syncState.running = false;
+      if (syncState.again) { syncState.again = false; return syncNow("again"); }
+      return r;
+    });
+    syncState.promise = p;
+    return p;
+  }
+  function scheduleSync() {
+    if (!syncToken()) return;
+    setSyncMeta({ pending: true });
+    if (syncState.timer) clearTimeout(syncState.timer);
+    syncState.timer = setTimeout(function () { syncState.timer = null; syncNow("change"); }, 5000);
+  }
+  function fmtSyncTime(iso) {
+    try {
+      return new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Bucharest", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
+    } catch (e) { return iso; }
+  }
+  function syncStatusText() {
+    var m = syncMeta();
+    if (!syncToken()) return "Sync is off on this device. Words are saved only here.";
+    if (m.status === "syncing") return "Syncing…";
+    if (m.status === "offline") return "Offline. Changes are saved here and will sync when you are back online." + (m.lastSync ? " Last synced " + fmtSyncTime(m.lastSync) + "." : "");
+    if (m.status === "error") return "Sync problem: " + (m.error || "unknown") + (m.lastSync ? " Last good sync " + fmtSyncTime(m.lastSync) + "." : "");
+    if (m.lastSync) return "Synced " + fmtSyncTime(m.lastSync) + (m.pending ? " · changes waiting to send" : " · up to date") + ".";
+    return "Sync is on. Waiting for the first sync…";
+  }
+  function updateSyncStatus() {
+    var el = document.getElementById("sync-status");
+    if (!el) return;
+    var m = syncMeta();
+    el.textContent = syncStatusText();
+    var on = !!syncToken();
+    el.className = "sync-status" + (on && m.status === "error" ? " is-error" : on && m.status === "offline" ? " is-offline" : "");
+  }
+  function syncCardHtml() {
+    var html = '<section class="sync-card" id="sync-card"><h2>Sync across devices</h2>';
+    if (!syncToken()) {
+      html += '<p class="muted">One copy of your words, chapters, grammar and stats on your phone, laptop and any browser. Paste a GitHub token once on each device. It stays on that device.</p>';
+      html += '<p><a href="https://github.com/settings/tokens/new?scopes=gist&amp;description=JLPT%20N2%20sync" target="_blank" rel="noopener">Make a token on GitHub</a> (tick only “gist”).</p>';
+      html += '<label for="sync-token">GitHub token</label>';
+      html += '<input id="sync-token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ghp_… or github_pat_…">';
+      html += '<div class="paste-actions"><button type="button" class="primary" data-act="sync-connect">Turn on sync</button></div>';
+    } else {
+      html += '<div class="paste-actions"><button type="button" class="primary" data-act="sync-now">Sync now</button></div>';
+    }
+    html += '<p id="sync-status" class="sync-status" role="status" aria-live="polite"></p>';
+    if (ui.syncMsg) html += '<p class="muted">' + esc(ui.syncMsg) + "</p>";
+    if (syncToken()) {
+      var gu = syncMeta().gistUrl;
+      html += '<p class="muted small">Stored in a secret gist on your GitHub' + (gu && /^https:\/\/gist\.github\.com\//.test(gu) ? ' (<a href="' + esc(gu) + '" target="_blank" rel="noopener">open</a>)' : "") + '.</p>';
+      html += '<button type="button" class="secondary" data-act="sync-off">Turn off sync on this device</button>';
+    }
+    html += "</section>";
+    return html;
+  }
+
   var activeSince = null;
   function blankDayStats(date) {
     return { date: date, activeMs: 0, sessions: 0, quizzes: 0, levels: 0, wordsGraded: 0, levelKeys: [] };
@@ -509,7 +706,7 @@ if (typeof document !== "undefined") {
     var elapsed = now - activeSince;
     if (elapsed > 0) {
       ensureDayStats(todayISO()).activeMs += elapsed;
-      saveProgress();
+      saveProgress(true);
     }
     activeSince = document.visibilityState === "visible" ? now : null;
   }
@@ -891,8 +1088,10 @@ if (typeof document !== "undefined") {
       html += '<button type="button" class="primary" data-act="start">Start today\'s session</button>';
     }
     html += "<p class=\"muted\">Exam date: 6 December 2026. Pass mark: 90/180, at least 19 in each section. This app does not calculate scaled scores.</p>";
+    html += syncCardHtml();
     html += backupControlsHtml();
     main.innerHTML = html;
+    updateSyncStatus();
   }
 
   function renderEnd() {
@@ -1902,6 +2101,37 @@ if (typeof document !== "undefined") {
       } else render();
       return;
     }
+    if (act === "sync-connect") {
+      var tokBox = document.getElementById("sync-token");
+      var tok = tokBox ? String(tokBox.value || "").replace(/\s+/g, "") : "";
+      if (!tok) { ui.syncMsg = "Paste the token first."; render(); return; }
+      try { localStorage.setItem(SYNC_TOKEN_KEY, tok); } catch (err) {}
+      setSyncMeta({ status: null, error: null, gistId: null, gistUrl: null, lastSync: null });
+      ui.syncMsg = "Connecting…";
+      render();
+      syncNow("connect").then(function (r) {
+        var m = syncMeta();
+        if (r === "error" && m.authError) {
+          try { localStorage.removeItem(SYNC_TOKEN_KEY); localStorage.removeItem(SYNC_META_KEY); } catch (err) {}
+          ui.syncMsg = m.error;
+        } else if (r === "error") ui.syncMsg = "Saved the token, but the first sync failed. It will retry.";
+        else ui.syncMsg = "Sync is on. Do the same on your other devices.";
+        render();
+      });
+      return;
+    }
+    if (act === "sync-now") {
+      ui.syncMsg = null;
+      syncNow("manual").then(function () { updateSyncStatus(); });
+      return;
+    }
+    if (act === "sync-off") {
+      if (!window.confirm("Turn off sync on this device? Your words stay here and on GitHub; this device just stops syncing.")) return;
+      try { localStorage.removeItem(SYNC_TOKEN_KEY); localStorage.removeItem(SYNC_META_KEY); } catch (err) {}
+      ui.syncMsg = "Sync turned off on this device.";
+      render();
+      return;
+    }
     if (act === "bulk-add") {
       var bulkBox = document.getElementById("bulk-box");
       if (!bulkBox) return;
@@ -1955,7 +2185,7 @@ if (typeof document !== "undefined") {
         render();
         return;
       }
-      if (mode === "replace") pasteCh.words = [];
+      if (mode === "replace") { (pasteCh.words || []).forEach(function (w) { tombstone(w.id); }); pasteCh.words = []; }
       parsed.rows.forEach(function (row) {
         pasteCh.words.push({
           id: newId("cw"),
@@ -2189,7 +2419,7 @@ if (typeof document !== "undefined") {
         render();
         return;
       }
-      if (gMode === "replace") gCh.points = [];
+      if (gMode === "replace") { (gCh.points || []).forEach(function (pt) { tombstone(pt.id); }); gCh.points = []; }
       gParsed.rows.forEach(function (row) {
         gCh.points.push({
           id: newId("gp"),
@@ -2538,12 +2768,19 @@ if (typeof document !== "undefined") {
   }
   window.addEventListener("hashchange", function () { render(); });
   document.addEventListener("visibilitychange", function () {
-    if (document.visibilityState === "visible") startActiveClock();
-    else stopActiveClock();
+    if (document.visibilityState === "visible") { startActiveClock(); syncIfStale(20000); }
+    else { stopActiveClock(); syncNow("hidden"); }
   });
+  function syncIfStale(ms) {
+    var last = syncMeta().lastSync;
+    if (!last || Date.now() - new Date(last).getTime() > ms || syncMeta().pending) syncNow("focus");
+  }
+  window.addEventListener("online", function () { syncNow("online"); });
+  window.addEventListener("offline", function () { if (syncToken()) setSyncMeta({ status: "offline" }); });
+  setInterval(function () { if (document.visibilityState === "visible") syncIfStale(180000); }, 60000);
   window.addEventListener("pageshow", function () { startActiveClock(); });
   window.addEventListener("pagehide", function () { stopActiveClock(); });
-  window.addEventListener("focus", function () { startActiveClock(); });
+  window.addEventListener("focus", function () { startActiveClock(); syncIfStale(20000); });
   window.addEventListener("blur", function () { flushActiveTime(); });
   setInterval(function () {
     if (document.visibilityState === "visible") flushActiveTime();
@@ -2554,8 +2791,10 @@ if (typeof document !== "undefined") {
   }
   restoreFromMirrors().then(function () {
     render();
+    syncNow("startup");
   }).catch(function () {
     render();
+    syncNow("startup");
   });
 })();
 }
