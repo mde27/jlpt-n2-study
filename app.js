@@ -162,38 +162,70 @@ function wordKey(kanji, reading) {
   return String(kanji || "").trim() + "\u0000" + String(reading || "").trim();
 }
 
-/* Grammar paste: pattern | meaning | usage [| example] — tab, comma, or | */
+/* Grammar paste.
+   New:  pattern | reading | meaning | usage | example   (reading, usage, example optional)
+   Old:  pattern | meaning | usage | example              (still works)
+   Field 2 counts as a reading when it is kana only (hiragana/katakana/〜/～/punctuation) and the
+   pattern has kanji, or when there are 5+ fields. Also accepts blocks: one field per line, blank line between points. */
+var KANA_ONLY_RE = /^[\u3040-\u309F\u30A0-\u30FF\u301C\uFF5E~ー・、。，．,.\s\u3000（）()\/／…「」『』]+$/;
+var HAS_KANA_RE = /[\u3040-\u309F\u30A0-\u30FF]/;
+var HAS_KANJI_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF々]/;
+function isKanaOnly(s) { s = String(s || ""); return KANA_ONLY_RE.test(s) && HAS_KANA_RE.test(s); }
+function grammarFromFields(f) {
+  f = (f || []).map(function (x) { return String(x == null ? "" : x).trim(); });
+  while (f.length && f[f.length - 1] === "") f.pop();
+  if (f.length < 3 || !f[0]) return null;
+  var withReading = (isKanaOnly(f[1]) && (HAS_KANJI_RE.test(f[0]) || f.length >= 5)) || (f[1] === "" && f.length >= 4);
+  if (withReading) {
+    if (!f[2]) return null;
+    return { pattern: f[0], reading: f[1], meaning: f[2], usage: f[3] || "", example: f.slice(4).join(" ").trim() };
+  }
+  if (!f[1] || !f[2]) return null;
+  return { pattern: f[0], reading: "", meaning: f[1], usage: f[2], example: f.slice(3).join(" ").trim() };
+}
 function splitGrammarPasteLine(line) {
   var s = String(line || "").trim();
   if (!s) return null;
   var parts;
   if (s.indexOf("\t") !== -1) parts = s.split("\t");
-  else if (s.indexOf("|") !== -1) parts = s.split("|");
+  else if (/[|\uFF5C]/.test(s)) parts = s.split(/[|\uFF5C]/);
   else if (s.indexOf(",") !== -1) parts = s.split(",");
   else return null;
-  parts = parts.map(function (p) { return p.trim(); });
-  while (parts.length && parts[parts.length - 1] === "") parts.pop();
-  if (parts.length < 3) return null;
-  return {
-    pattern: parts[0],
-    meaning: parts[1],
-    usage: parts[2],
-    example: parts.slice(3).join(" ").trim()
-  };
+  return grammarFromFields(parts);
 }
-
 function parseGrammarPaste(text) {
   var rows = [];
   var skipped = 0;
-  String(text || "").split(/\r?\n/).forEach(function (line) {
-    var t = line.trim();
-    if (!t) return;
-    var row = splitGrammarPasteLine(t);
-    if (!row || !row.pattern || !row.meaning || !row.usage) {
-      skipped += 1;
-      return;
+  String(text || "").replace(/\r\n?/g, "\n").split(/\n[ \t\u3000]*\n/).forEach(function (block) {
+    var lines = block.split("\n").map(function (l) { return l.replace(/^[\s\u3000]+|[\s\u3000]+$/g, ""); }).filter(Boolean);
+    if (!lines.length) return;
+    var hard = function (l) { return l.indexOf("\t") !== -1 || /[|\uFF5C]/.test(l); };
+    /* A comma can be a field separator (old one-line format) or just part of a meaning inside a block.
+       Try both readings of the block and keep the one that finds more points. */
+    function readBlock(commaIsSep) {
+      var out = [], skip = 0, loose = [];
+      function flush() {
+        if (!loose.length) return;
+        var row = loose.length >= 3 && loose.length <= 5 ? grammarFromFields(loose) : null;
+        if (row) out.push(row);
+        else skip += loose.length >= 3 ? 1 : loose.length;
+        loose = [];
+      }
+      lines.forEach(function (l) {
+        if (hard(l) || (commaIsSep && l.indexOf(",") !== -1)) {
+          flush();
+          var row = splitGrammarPasteLine(l);
+          if (row) out.push(row); else skip += 1;
+        } else loose.push(l);
+      });
+      flush();
+      return { rows: out, skipped: skip };
     }
-    rows.push(row);
+    var asSep = readBlock(true);
+    var asText = readBlock(false);
+    var pick = asText.rows.length > asSep.rows.length || (asText.rows.length === asSep.rows.length && asText.skipped < asSep.skipped) ? asText : asSep;
+    pick.rows.forEach(function (r) { rows.push(r); });
+    skipped += pick.skipped;
   });
   return { rows: rows, skipped: skipped };
 }
@@ -310,7 +342,7 @@ if (typeof document !== "undefined") {
   var furiBtn = document.getElementById("furi");
   var furigana = localStorage.getItem(FURI_KEY) === "1";
   var session = loadSession();
-  var ui = { readingId: null, scripts: {}, mock: null, mockPaper: "short", chapterId: null, pasteMsg: null, chFlash: null, chQuiz: null, editMsg: null, comboLevel: null, comboChunk: null, gChapterId: null, gPasteMsg: null, gEditMsg: null, gFlash: null, gQuiz: null, bulkDraft: "", bulkMsg: null, syncMsg: null };
+  var ui = { readingId: null, scripts: {}, mock: null, mockPaper: "short", chapterId: null, pasteMsg: null, chFlash: null, chQuiz: null, editMsg: null, comboLevel: null, comboChunk: null, gChapterId: null, gPasteMsg: null, gEditMsg: null, gFlash: null, gQuiz: null, gEditPointId: null, bulkDraft: "", bulkMsg: null, syncMsg: null };
 
   function normalizeProgress(data) {
     if (!data || !Array.isArray(data.words)) return blankProgress();
@@ -433,8 +465,11 @@ if (typeof document !== "undefined") {
     var tomb = {};
     [a.deleted, b.deleted].forEach(function (d) { if (d) Object.keys(d).forEach(function (k) { tomb[k] = d[k]; }); });
     a.deleted = tomb;
-    a.chapters = byIdMerge(a.chapters, b.chapters, tomb, function (x, y) { x.words = byIdMerge(x.words, y.words, tomb); });
-    a.grammarChapters = byIdMerge(a.grammarChapters, b.grammarChapters, tomb, function (x, y) { x.points = byIdMerge(x.points, y.points, tomb); });
+    /* Edited items carry updatedAt; the newer edit wins per id. */
+    var newerName = function (x, y) { if ((y.updatedAt || "") > (x.updatedAt || "")) { x.name = y.name; x.updatedAt = y.updatedAt; } };
+    var newerPoint = function (x, y) { if ((y.updatedAt || "") > (x.updatedAt || "")) Object.keys(y).forEach(function (k) { x[k] = y[k]; }); };
+    a.chapters = byIdMerge(a.chapters, b.chapters, tomb, function (x, y) { newerName(x, y); x.words = byIdMerge(x.words, y.words, tomb); });
+    a.grammarChapters = byIdMerge(a.grammarChapters, b.grammarChapters, tomb, function (x, y) { newerName(x, y); x.points = byIdMerge(x.points, y.points, tomb, newerPoint); });
     a.words = byIdMerge(a.words, b.words, tomb, function (x, y) {
       if (JSON.stringify(y).length > JSON.stringify(x).length && (y.lastDay || "") >= (x.lastDay || "")) Object.keys(y).forEach(function (k) { x[k] = y[k]; });
     });
@@ -589,6 +624,7 @@ if (typeof document !== "undefined") {
   function softRender() {
     var a = document.activeElement;
     if (a && main.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+    if (ui.gEditPointId) return;
     render();
   }
   function syncNow(reason) {
@@ -1691,7 +1727,15 @@ if (typeof document !== "undefined") {
     return ids.map(function (id) { return gPointBy(chapter.id, id); }).filter(Boolean);
   }
   function normGrammarAnswer(s) {
-    return String(s || "").replace(/\s+/g, "").toLowerCase();
+    return String(s || "").replace(/[\s\u3000〜～~]+/g, "").toLowerCase();
+  }
+  /* Pattern with furigana (ruby) when the Furigana toggle is on and a reading exists. */
+  function gPatternHtml(p) {
+    if (furigana && p.reading) return "<ruby>" + esc(p.pattern) + "<rt>" + esc(p.reading) + "</rt></ruby>";
+    return esc(p.pattern);
+  }
+  function gReadingLine(p) {
+    return p.reading ? '<p class="g-reading" lang="ja">' + esc(p.reading) + "</p>" : "";
   }
 
   function renderGrammar() {
@@ -1715,7 +1759,7 @@ if (typeof document !== "undefined") {
       if (ui.gEditMsg) html += '<p class="muted">' + esc(ui.gEditMsg) + "</p>";
       html += "</div>";
       if (!(ch.points && ch.points.length)) {
-        html += '<div class="empty"><p>No grammar points yet.</p><p>Paste a list below, one point per line.</p></div>';
+        html += '<div class="empty"><p>No grammar points yet.</p><p>Paste a list below.</p></div>';
       } else {
         html += '<p class="mode-label">Practice</p>';
         html += '<div class="actions">';
@@ -1725,9 +1769,9 @@ if (typeof document !== "undefined") {
         html += "</div>";
       }
       html += "<h2>Paste grammar</h2>";
-      html += '<p class="note">One point per line. Use tab, comma, or | between fields:<br>pattern[TAB]meaning[TAB]usage<br>pattern | meaning | usage<br>Optional 4th field: example. Only what you paste is saved — this app does not ship textbook grammar.</p>';
+      html += '<p class="note">One point per line, fields separated by | (or tab):<br><b>pattern | reading | meaning | usage | example</b><br>Reading, usage and example are optional. Old lines <b>pattern | meaning | usage</b> still work.<br>Or one field per line (pattern, reading, meaning, usage, example) with a blank line between points.<br>Example:<br><span lang="ja">〜に際して | にさいして | on the occasion of | formal; after a noun or verb | 卒業に際して、先生にお礼の手紙を書いた。</span><br>Only what you paste is saved — this app does not ship textbook grammar.</p>';
       html += '<label for="g-paste-box">Paste</label>';
-      html += '<textarea id="g-paste-box" lang="ja" placeholder="～ばかり | only / just | marks that something is all that happens | 食べてばかりいる"></textarea>';
+      html += '<textarea id="g-paste-box" lang="ja" placeholder="〜に応じて | におうじて | depending on | after a noun | 予算に応じて選ぶ。"></textarea>';
       html += '<div class="paste-actions">';
       html += '<button type="button" class="primary" data-act="g-paste" data-id="' + esc(ch.id) + '" data-mode="append">Append paste</button>';
       html += '<button type="button" class="secondary" data-act="g-paste" data-id="' + esc(ch.id) + '" data-mode="replace">Replace all with paste</button>';
@@ -1735,10 +1779,26 @@ if (typeof document !== "undefined") {
       if (ui.gPasteMsg) html += '<p class="muted">' + esc(ui.gPasteMsg) + "</p>";
       if (ch.points && ch.points.length) {
         html += "<h2>Points in this chapter</h2>";
+        html += '<p class="muted">Tap Edit on a point to add or fix its reading.</p>';
+        if (ui.gPointMsg) html += '<p class="bulk-msg" role="status">' + esc(ui.gPointMsg) + "</p>";
         ch.points.forEach(function (p) {
+          if (ui.gEditPointId === p.id) {
+            html += '<form class="edit-block g-edit" data-act="g-edit-save" data-id="' + esc(ch.id) + '" data-point="' + esc(p.id) + '">';
+            html += '<p class="mode-label">Edit point</p>';
+            html += '<label for="ge-pattern">Pattern</label><input id="ge-pattern" name="pattern" type="text" lang="ja" autocomplete="off" required value="' + esc(p.pattern) + '">';
+            html += '<label for="ge-reading">Reading (kana)</label><input id="ge-reading" name="reading" type="text" lang="ja" autocomplete="off" placeholder="にさいして" value="' + esc(p.reading || "") + '">';
+            html += '<label for="ge-meaning">Meaning</label><input id="ge-meaning" name="meaning" type="text" autocomplete="off" required value="' + esc(p.meaning) + '">';
+            html += '<label for="ge-usage">Usage</label><input id="ge-usage" name="usage" type="text" autocomplete="off" value="' + esc(p.usage || "") + '">';
+            html += '<label for="ge-example">Example</label><textarea id="ge-example" name="example" lang="ja">' + esc(p.example || "") + "</textarea>";
+            html += '<div class="paste-actions"><button type="submit" class="primary">Save point</button><button type="button" class="secondary" data-act="g-edit-cancel">Cancel</button></div>';
+            html += "</form>";
+            return;
+          }
           html += '<div class="word-row"><div class="meta"><div class="w" lang="ja">' + esc(p.pattern) + "</div>";
+          if (p.reading) html += '<div class="g-reading" lang="ja">' + esc(p.reading) + "</div>";
           html += '<div class="m">' + esc(p.meaning) + (p.usage ? " · " + esc(p.usage) : "") + "</div></div>";
-          html += '<button type="button" class="danger" data-act="g-del-point" data-id="' + esc(ch.id) + '" data-point="' + esc(p.id) + '">Delete</button></div>';
+          html += '<div class="row-btns"><button type="button" class="edit" data-act="g-edit-point" data-point="' + esc(p.id) + '">Edit</button>';
+          html += '<button type="button" class="danger" data-act="g-del-point" data-id="' + esc(ch.id) + '" data-point="' + esc(p.id) + '">Delete</button></div></div>';
         });
       }
       html += '<div class="edit-block">';
@@ -1791,10 +1851,11 @@ if (typeof document !== "undefined") {
     }
     var html = '<p class="muted">' + esc(ch.name) + " · flashcards · " + (st.index + 1) + " of " + st.ids.length + "</p>";
     if (!st.revealed) {
-      html += '<button type="button" class="card" data-act="g-flip"><div class="jp kanji" lang="ja">' + esc(p.pattern) + "</div></button>";
+      html += '<button type="button" class="card" data-act="g-flip"><div class="jp kanji" lang="ja">' + gPatternHtml(p) + "</div></button>";
     } else {
       html += '<div class="card">';
-      html += '<div class="jp kanji" lang="ja">' + esc(p.pattern) + "</div>";
+      html += '<div class="jp kanji" lang="ja">' + gPatternHtml(p) + "</div>";
+      html += gReadingLine(p);
       html += '<p class="meaning">' + esc(p.meaning) + "</p>";
       html += '<p class="muted">' + esc(p.usage) + "</p>";
       if (p.example) html += '<p lang="ja">' + esc(p.example) + "</p>";
@@ -1834,7 +1895,8 @@ if (typeof document !== "undefined") {
     if (p.usage) html += '<p class="muted">' + esc(p.usage) + "</p>";
     if (st.feedback) {
       html += '<p class="' + (st.feedback.ok ? "muted" : "warn") + '">' + (st.feedback.ok ? "Correct." : "Not this one.") + "</p>";
-      html += '<div class="card"><div class="jp kanji" lang="ja">' + esc(p.pattern) + "</div>";
+      html += '<div class="card"><div class="jp kanji" lang="ja">' + gPatternHtml(p) + "</div>";
+      html += gReadingLine(p);
       html += '<p class="meaning">' + esc(p.meaning) + "</p>";
       if (p.usage) html += '<p class="muted">' + esc(p.usage) + "</p>";
       if (p.example) html += '<p lang="ja">' + esc(p.example) + "</p>";
@@ -1842,14 +1904,14 @@ if (typeof document !== "undefined") {
       html += '<button type="button" class="primary" data-act="g-quiz-next">Next</button>';
     } else if (st.mode === "type") {
       html += '<form data-act="g-type">';
-      html += '<label for="g-type-in">Type the pattern</label>';
+      html += '<label for="g-type-in">Type the pattern' + (p.reading ? " (kanji or reading)" : "") + "</label>";
       html += '<input id="g-type-in" name="answer" type="text" autocomplete="off" lang="ja" required>';
       html += '<p><button type="submit" class="primary">Check</button></p>';
       html += "</form>";
     } else {
       if (!st.choices) st.choices = grammarChoices(ch, p.id, 4);
       st.choices.forEach(function (opt) {
-        html += '<button type="button" class="choice" lang="ja" data-act="g-choice" data-id="' + esc(opt.id) + '">' + esc(opt.pattern) + "</button>";
+        html += '<button type="button" class="choice" lang="ja" data-act="g-choice" data-id="' + esc(opt.id) + '">' + gPatternHtml(opt) + "</button>";
       });
     }
     html += '<p><button type="button" class="secondary" data-act="g-stop">Stop</button></p>';
@@ -2386,6 +2448,8 @@ if (typeof document !== "undefined") {
     if (act === "export") { exportProgress(); return; }
     if (act === "g-open") {
       ui.gChapterId = b.getAttribute("data-id");
+      ui.gEditPointId = null;
+      ui.gPointMsg = null;
       ui.gPasteMsg = null;
       ui.gEditMsg = null;
       ui.gFlash = null;
@@ -2395,6 +2459,8 @@ if (typeof document !== "undefined") {
     }
     if (act === "g-back") {
       ui.gChapterId = null;
+      ui.gEditPointId = null;
+      ui.gPointMsg = null;
       ui.gPasteMsg = null;
       ui.gFlash = null;
       ui.gQuiz = null;
@@ -2424,14 +2490,29 @@ if (typeof document !== "undefined") {
         gCh.points.push({
           id: newId("gp"),
           pattern: row.pattern,
+          reading: row.reading || "",
           meaning: row.meaning,
           usage: row.usage,
           example: row.example || ""
         });
       });
       saveProgress();
-      ui.gPasteMsg = (gMode === "replace" ? "Replaced with " : "Appended ") + gParsed.rows.length + " point" + (gParsed.rows.length === 1 ? "" : "s") + (gParsed.skipped ? "; skipped " + gParsed.skipped + "." : ".");
+      var gWithR = gParsed.rows.filter(function (r) { return r.reading; }).length;
+      ui.gPasteMsg = (gMode === "replace" ? "Replaced with " : "Appended ") + gParsed.rows.length + " point" + (gParsed.rows.length === 1 ? "" : "s") + (gWithR ? " (" + gWithR + " with reading)" : "") + (gParsed.skipped ? "; skipped " + gParsed.skipped + "." : ".");
       gBox.value = "";
+      render();
+      return;
+    }
+    if (act === "g-edit-point") {
+      ui.gEditPointId = b.getAttribute("data-point");
+      ui.gPointMsg = null;
+      render();
+      var geR = document.getElementById("ge-reading");
+      if (geR) { geR.scrollIntoView({ block: "center" }); geR.focus(); }
+      return;
+    }
+    if (act === "g-edit-cancel") {
+      ui.gEditPointId = null;
       render();
       return;
     }
@@ -2614,6 +2695,7 @@ if (typeof document !== "undefined") {
       var newName = (rename.name.value || "").trim();
       if (!newName) return;
       chR.name = newName;
+      chR.updatedAt = new Date().toISOString();
       ui.editMsg = "Renamed to “" + newName + "”.";
       saveProgress();
       render();
@@ -2648,6 +2730,7 @@ if (typeof document !== "undefined") {
       var gNew = (gRename.name.value || "").trim();
       if (!gNew) return;
       gChR.name = gNew;
+      gChR.updatedAt = new Date().toISOString();
       ui.gEditMsg = "Renamed to “" + gNew + "”.";
       saveProgress();
       render();
@@ -2665,6 +2748,27 @@ if (typeof document !== "undefined") {
       render();
       return;
     }
+    var gEdit = e.target.closest("form[data-act='g-edit-save']");
+    if (gEdit) {
+      e.preventDefault();
+      progress = mergeProgress(progress, readLocalParsed());
+      var gePt = gPointBy(gEdit.getAttribute("data-id"), gEdit.getAttribute("data-point"));
+      if (!gePt) { ui.gEditPointId = null; render(); return; }
+      var gePattern = (gEdit.pattern.value || "").trim();
+      var geMeaning = (gEdit.meaning.value || "").trim();
+      if (!gePattern || !geMeaning) return;
+      gePt.pattern = gePattern;
+      gePt.reading = (gEdit.reading.value || "").trim();
+      gePt.meaning = geMeaning;
+      gePt.usage = (gEdit.usage.value || "").trim();
+      gePt.example = (gEdit.example.value || "").trim();
+      gePt.updatedAt = new Date().toISOString();
+      ui.gEditPointId = null;
+      ui.gPointMsg = "Saved “" + gePattern + "”" + (gePt.reading ? " (" + gePt.reading + ")." : ".");
+      saveProgress();
+      render();
+      return;
+    }
     var gType = e.target.closest("form[data-act='g-type']");
     if (gType) {
       e.preventDefault();
@@ -2672,7 +2776,7 @@ if (typeof document !== "undefined") {
       var gCur = gPointBy(ui.gQuiz.chapterId, ui.gQuiz.ids[ui.gQuiz.index]);
       if (!gCur) return;
       var gAns = (gType.answer.value || "").trim();
-      var gOkType = normGrammarAnswer(gAns) === normGrammarAnswer(gCur.pattern);
+      var gOkType = normGrammarAnswer(gAns) === normGrammarAnswer(gCur.pattern) || (!!gCur.reading && normGrammarAnswer(gAns) === normGrammarAnswer(gCur.reading));
       if (gOkType) ui.gQuiz.correct += 1;
       bumpStat("wordsGraded", 1);
       ui.gQuiz.feedback = { ok: gOkType };

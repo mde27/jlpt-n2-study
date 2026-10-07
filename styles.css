@@ -471,3 +471,18 @@ button.card { width: 100%; text-align: center; }
 .sync-status.is-offline { color: var(--hard); }
 .sync-card .small { font-size: 0.85rem; }
 .sync-card input[type="password"] { width: 100%; }
+
+/* Grammar readings + edit */
+.g-reading { margin: 2px 0 4px; color: var(--accent); font-size: 0.95rem; font-weight: 600; }
+.card .g-reading { font-size: 1.1rem; text-align: center; }
+.word-row .row-btns { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
+.word-row .edit {
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font-weight: 650;
+}
+.g-edit input, .g-edit textarea { background: var(--card); }

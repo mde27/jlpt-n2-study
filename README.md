@@ -51,6 +51,10 @@ Kanji, reading, English, and an optional example. Saved in `localStorage` under 
 
 Under the single form on **Add** there is a **Paste many words** box and an **Add all words** button. Leave a blank line between words; each word is 3 or 4 lines (word, reading, meaning, optional example). One line `word | reading | meaning | example` also works. A live count (“24 words found · 24 will be added”) shows before saving. Words already saved with the same word and reading are skipped. New words wait in Today, 20 a day, until first studied.
 
+## Grammar readings
+
+Gram paste format: `pattern | reading | meaning | usage | example` (reading, usage and example optional). Old lines `pattern | meaning | usage [| example]` still parse as before: field 2 counts as a reading only when it is kana only and the pattern has kanji (or there are 5+ fields). Blocks also work: one field per line, blank line between points. Readings show under the pattern in the list, on the back of flashcards and in quiz feedback; with Furigana on, the pattern also gets ruby on the front. Quiz · type accepts the pattern or its reading (〜 optional). Each point in “Points in this chapter” has an **Edit** button to add or fix the reading (and other fields). Edits set `updatedAt`; on merge/sync the newer edit wins per point (chapter renames too).
+
 ## Sync across devices
 
 Card **Sync across devices** at the bottom of **Today**. Paste a GitHub token that has only the `gist` scope (https://github.com/settings/tokens/new?scopes=gist&description=JLPT%20N2%20sync) and press **Turn on sync**, once per device. The token is stored only in that browser's localStorage (`jlpt-n2-sync-token`) and is sent only to api.github.com. The app finds or creates one secret gist with the file `jlpt-n2-study-data.json`.
