@@ -82,7 +82,7 @@ function planFor(today) {
 }
 
 function blankProgress() {
-  return { version: 2, words: [], mistakes: [], doneDays: {}, chapters: [], grammarChapters: [], stats: { days: {} } };
+  return { version: 2, words: [], mistakes: [], doneDays: {}, chapters: [], grammarChapters: [], drillLog: [], stats: { days: {} } };
 }
 
 function newId(prefix) {
@@ -356,6 +356,7 @@ if (typeof document !== "undefined") {
     data.grammarChapters.forEach(function (ch) {
       if (!ch.points) ch.points = [];
     });
+    if (!Array.isArray(data.drillLog)) data.drillLog = [];
     if (!data.stats || typeof data.stats !== "object") data.stats = { days: {} };
     if (!data.stats.days || typeof data.stats.days !== "object") data.stats.days = {};
     if (!data.deleted || typeof data.deleted !== "object") data.deleted = {};
@@ -367,7 +368,7 @@ if (typeof document !== "undefined") {
     var hasWords = p.words && p.words.length;
     var hasCh = p.chapters && p.chapters.length;
     var hasGram = p.grammarChapters && p.grammarChapters.length;
-    var hasMiss = p.mistakes && p.mistakes.length;
+    var hasMiss = (p.mistakes && p.mistakes.length) || (p.drillLog && p.drillLog.length);
     var hasDays = p.doneDays && Object.keys(p.doneDays).length;
     var hasStats = p.stats && p.stats.days && Object.keys(p.stats.days).length;
     return !(hasWords || hasCh || hasGram || hasMiss || hasDays || hasStats);
@@ -473,6 +474,7 @@ if (typeof document !== "undefined") {
     a.words = byIdMerge(a.words, b.words, tomb, function (x, y) {
       if (JSON.stringify(y).length > JSON.stringify(x).length && (y.lastDay || "") >= (x.lastDay || "")) Object.keys(y).forEach(function (k) { x[k] = y[k]; });
     });
+    a.drillLog = byIdMerge(a.drillLog, b.drillLog, tomb);
     var mk = {};
     (a.mistakes || []).forEach(function (m) { if (m) mk[m.at + "|" + m.wordId] = 1; });
     (b.mistakes || []).forEach(function (m) { if (m && !mk[m.at + "|" + m.wordId]) a.mistakes.push(m); });
@@ -481,7 +483,7 @@ if (typeof document !== "undefined") {
     Object.keys(bd).forEach(function (k) {
       var x = a.stats.days[k], y = bd[k];
       if (!x) { a.stats.days[k] = y; return; }
-      ["activeMs", "sessions", "quizzes", "levels", "wordsGraded"].forEach(function (f) { if ((y[f] || 0) > (x[f] || 0)) x[f] = y[f]; });
+      ["activeMs", "sessions", "quizzes", "levels", "wordsGraded", "drills", "drillQs", "drillMs"].forEach(function (f) { if ((y[f] || 0) > (x[f] || 0)) x[f] = y[f]; });
       (y.levelKeys || []).forEach(function (lk) { if (!x.levelKeys) x.levelKeys = []; if (x.levelKeys.indexOf(lk) === -1) x.levelKeys.push(lk); });
     });
     return a;
@@ -722,8 +724,9 @@ if (typeof document !== "undefined") {
   }
 
   var activeSince = null;
+  var activePage = null;
   function blankDayStats(date) {
-    return { date: date, activeMs: 0, sessions: 0, quizzes: 0, levels: 0, wordsGraded: 0, levelKeys: [] };
+    return { date: date, activeMs: 0, sessions: 0, quizzes: 0, levels: 0, wordsGraded: 0, drills: 0, drillQs: 0, drillMs: 0, levelKeys: [] };
   }
   function ensureDayStats(date) {
     if (!progress.stats || typeof progress.stats !== "object") progress.stats = { days: {} };
@@ -731,7 +734,7 @@ if (typeof document !== "undefined") {
     if (!progress.stats.days[date]) progress.stats.days[date] = blankDayStats(date);
     var d = progress.stats.days[date];
     if (!Array.isArray(d.levelKeys)) d.levelKeys = [];
-    ["activeMs", "sessions", "quizzes", "levels", "wordsGraded"].forEach(function (k) {
+    ["activeMs", "sessions", "quizzes", "levels", "wordsGraded", "drills", "drillQs", "drillMs"].forEach(function (k) {
       if (d[k] == null) d[k] = 0;
     });
     return d;
@@ -741,7 +744,9 @@ if (typeof document !== "undefined") {
     var now = Date.now();
     var elapsed = now - activeSince;
     if (elapsed > 0) {
-      ensureDayStats(todayISO()).activeMs += elapsed;
+      var dayRow = ensureDayStats(todayISO());
+      dayRow.activeMs += elapsed;
+      if (activePage === "drill") dayRow.drillMs = (dayRow.drillMs || 0) + elapsed;
       saveProgress(true);
     }
     activeSince = document.visibilityState === "visible" ? now : null;
@@ -797,7 +802,7 @@ if (typeof document !== "undefined") {
      (exam 6 Dec + buffer), extended to "today" if later. Newest first. */
   var STATS_END = "2026-12-31";
   function dayHasStudy(row) {
-    return !!(row && ((row.activeMs || 0) > 0 || (row.wordsGraded || 0) > 0 || (row.sessions || 0) > 0 || (row.quizzes || 0) > 0 || (row.levels || 0) > 0));
+    return !!(row && ((row.activeMs || 0) > 0 || (row.wordsGraded || 0) > 0 || (row.sessions || 0) > 0 || (row.quizzes || 0) > 0 || (row.levels || 0) > 0 || (row.drillQs || 0) > 0));
   }
   function statsWindowDays() {
     flushActiveTime();
@@ -829,6 +834,7 @@ if (typeof document !== "undefined") {
     html += '<p class="stat-line">Quizzes finished: ' + (day.quizzes || 0) + "</p>";
     html += '<p class="stat-line">Combination levels practiced: ' + (day.levels || 0) + "</p>";
     html += '<p class="stat-line">Words graded: ' + (day.wordsGraded || 0) + "</p>";
+    html += '<p class="stat-line">Drill: ' + (day.drillQs || 0) + " questions, " + (day.drills || 0) + " rounds finished, " + esc(formatMinutes(day.drillMs || 0)) + "</p>";
     html += '<p class="muted"><a href="#stats">Open Stats</a></p>';
     html += "</div>";
     return html;
@@ -1068,9 +1074,578 @@ if (typeof document !== "undefined") {
     render();
   }
 
+  /* ===================== Drill: JLPT N2 language-knowledge sections =====================
+     Questions are built only from her own words/chapters/grammar; the open Combos list is used
+     for distractors and prefix/suffix statistics. Results are an append-only log (progress.drillLog,
+     one entry per answer, merged by id), and each item's redo state is derived from its history. */
+  var DRILL_SECTIONS = [
+    { id: "read", n: 1, jp: "漢字読み", name: "Kanji reading", desc: "Pick the reading of the underlined word.", need: "Add words written with kanji (Add or Chapters)." },
+    { id: "ortho", n: 2, jp: "表記", name: "Orthography", desc: "Pick the kanji for the underlined kana.", need: "Add words written with kanji." },
+    { id: "form", n: 3, jp: "語形成", name: "Word formation", desc: "Pick the prefix or suffix that completes the word. Beta: wrong options are only checked against your words and Combos, so rarely another one could also be a real word.", need: "Coming later: unlocks when at least 4 of your words are a prefix + another word you have (大掃除 counts once 掃除 is also in your words), or 4 are a word + suffix (研究者 with 研究)." },
+    { id: "ctx", n: 4, jp: "文脈規定", name: "Context", desc: "Pick the word that fills the blank.", need: "Add example sentences that contain the word exactly as written (給料 → 給料をもらう。). Needs 4+ such words." },
+    { id: "para", n: 5, jp: "言い換え類義", name: "Paraphrase", desc: "Pick the closest meaning of the underlined word.", need: "Add words with English meanings." },
+    { id: "gram", n: 6, jp: "文法形式の判断", name: "Grammar form", desc: "Pick the grammar pattern that fills the blank.", need: "Paste at least 4 grammar points, with examples that contain the pattern (〜に際して → 卒業に際して…)." },
+    { id: "comp", n: 7, jp: "文の組み立て", name: "Sentence composition ★", desc: "Tap the 4 parts in the right order.", need: "Add longer example sentences (about 10+ characters with particles like は・が・を・に) to words or grammar points." }
+  ];
+  var DRILL_SIZE = 10;
+  var drillCache = { sig: null, data: null };
+  function drillSection(id) {
+    for (var i = 0; i < DRILL_SECTIONS.length; i++) if (DRILL_SECTIONS[i].id === id) return DRILL_SECTIONS[i];
+    return null;
+  }
+  function dPick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+  function dHasKanji(s) { return HAS_KANJI_RE.test(String(s || "")); }
+  var D_STOP = { to: 1, the: 1, a: 1, an: 1, of: 1, be: 1, "for": 1, and: 1, or: 1, in: 1, on: 1, at: 1, with: 1, something: 1, someone: 1, one: 1, "one's": 1, get: 1, become: 1, make: 1, very: 1, from: 1, is: 1, as: 1, by: 1, up: 1 };
+  function dWords(en) {
+    return String(en || "").toLowerCase().replace(/\([^)]*\)/g, " ").split(/[^a-z']+/).filter(function (w) { return w.length >= 3 && !D_STOP[w]; });
+  }
+  function dOverlap(a, b) {
+    var wa = dWords(a), wb = dWords(b);
+    for (var i = 0; i < wa.length; i++) {
+      for (var j = 0; j < wb.length; j++) {
+        if (wa[i] === wb[j]) return true;
+        if (wa[i].length >= 5 && wb[j].length >= 5 && wa[i].slice(0, 5) === wb[j].slice(0, 5)) return true;
+      }
+    }
+    return false;
+  }
+  function dIsVerbish(en) { return /^to\s/i.test(String(en || "").trim()); }
+  /* Word "shape": verbs/adjectives end in kana (okurigana), nouns end in kanji. */
+  function dShape(k) {
+    k = String(k || "");
+    var last = k.charAt(k.length - 1);
+    if (dHasKanji(last)) return "noun";
+    if (last === "い" && dHasKanji(k.charAt(k.length - 2))) return "adj-i:" + k.length;
+    return "kana:" + last;
+  }
+
+  /* ---------- pools ---------- */
+  function drillWordPool() {
+    var out = [], seen = {};
+    function add(w, src, chapterId) {
+      if (!w || !w.id || !w.kanji) return;
+      var kanji = String(w.kanji).trim(), reading = String(w.reading || "").trim();
+      var k = kanji + "\u0000" + reading;
+      if (seen[k]) return;
+      seen[k] = 1;
+      out.push({ id: w.id, src: src, chapterId: chapterId || null, kanji: kanji, reading: reading, english: String(w.english || "").trim(), example: String(w.example || "").trim() });
+    }
+    (progress.words || []).forEach(function (w) { add(w, "w"); });
+    (progress.chapters || []).forEach(function (ch) { (ch.words || []).forEach(function (w) { add(w, "cw", ch.id); }); });
+    return out;
+  }
+  function drillGrammarPool() {
+    var out = [];
+    (progress.grammarChapters || []).forEach(function (ch) {
+      (ch.points || []).forEach(function (p) {
+        if (!p || !p.id || !p.pattern) return;
+        out.push({ id: p.id, chapterId: ch.id, pattern: p.pattern, reading: p.reading || "", meaning: p.meaning || "", usage: p.usage || "", example: String(p.example || "").trim(), core: gCore(p.pattern) });
+      });
+    });
+    return out;
+  }
+  function gCore(pattern) { return String(pattern || "").replace(/[\s\u3000〜～~…・]+/g, "").split(/[\/／]/)[0]; }
+  var comboIdx = null;
+  function comboIndex() {
+    if (comboIdx) return comboIdx;
+    var list = [];
+    var levels = (window.COMBOS && window.COMBOS.levels) || {};
+    Object.keys(levels).forEach(function (k) { (levels[k].words || []).forEach(function (w) { if (w && w.kanji) list.push(w); }); });
+    comboIdx = { list: list };
+    return comboIdx;
+  }
+  /* Everything we know: her words first, then Combos. */
+  function knownWords(pool) {
+    var all = pool.map(function (w) { return { kanji: w.kanji, reading: w.reading, english: w.english, mine: true }; });
+    comboIndex().list.forEach(function (w) { all.push({ kanji: w.kanji, reading: w.reading, english: w.english, mine: false }); });
+    return all;
+  }
+  function drillData() {
+    var pool = drillWordPool();
+    var gpool = drillGrammarPool();
+    var sig = pool.map(function (w) { return w.id + w.kanji + w.reading + w.english.length + w.example.length; }).join("|") + "#" +
+      gpool.map(function (p) { return p.id + p.pattern + p.example.length; }).join("|") + "#" + comboIndex().list.length;
+    if (drillCache.sig === sig) return drillCache.data;
+    var known = knownWords(pool);
+    var byReading = {}, byChar = {}, kanjiSet = {};
+    known.forEach(function (w) {
+      (byReading[w.reading] = byReading[w.reading] || []).push(w);
+      kanjiSet[w.kanji] = 1;
+      String(w.kanji).split("").forEach(function (c) { if (dHasKanji(c)) (byChar[c] = byChar[c] || []).push(w); });
+    });
+    /* Prefix/suffix inventory from HER words only: X+word or word+X where "word" is itself a known word
+       (hers or Combos). Combos alone is too noisy for affixes, so it only confirms the stem. */
+    var pre = {}, suf = {};
+    pool.map(function (w) { return w.kanji; }).forEach(function (k) {
+      if (k.length < 3) return;
+      var head = k.charAt(0), restP = k.slice(1), tail = k.charAt(k.length - 1), restS = k.slice(0, -1);
+      if (dHasKanji(head) && dHasKanji(restP.charAt(0)) && kanjiSet[restP]) (pre[head] = pre[head] || []).push(k);
+      if (dHasKanji(tail) && dHasKanji(restS.charAt(restS.length - 1)) && kanjiSet[restS]) (suf[tail] = suf[tail] || []).push(k);
+    });
+    var data = { pool: pool, gpool: gpool, known: known, byReading: byReading, byChar: byChar, kanjiSet: kanjiSet, pre: pre, suf: suf, items: {} };
+    /* Which items can make a question in each section (built once per data change). */
+    DRILL_SECTIONS.forEach(function (s) {
+      var ok = [];
+      var src = s.id === "gram" ? gpool : s.id === "comp" ? pool.concat(gpool) : pool;
+      src.forEach(function (it) { if (buildDrillQuestion(s.id, it, data)) ok.push(it); });
+      data.items[s.id] = ok;
+    });
+    drillCache = { sig: sig, data: data };
+    return data;
+  }
+
+  /* ---------- distractor helpers ---------- */
+  var D_DAKU = { "か": "が", "き": "ぎ", "く": "ぐ", "け": "げ", "こ": "ご", "さ": "ざ", "し": "じ", "す": "ず", "せ": "ぜ", "そ": "ぞ", "た": "だ", "て": "で", "と": "ど", "は": "ば", "ひ": "び", "ふ": "ぶ", "へ": "べ", "ほ": "ぼ" };
+  var D_UNDAKU = {};
+  Object.keys(D_DAKU).forEach(function (k) { D_UNDAKU[D_DAKU[k]] = k; });
+  var D_HANDAKU = { "は": "ぱ", "ひ": "ぴ", "ふ": "ぷ", "へ": "ぺ", "ほ": "ぽ", "ば": "ぱ", "び": "ぴ", "ぶ": "ぷ", "べ": "ぺ", "ぼ": "ぽ" };
+  function readingVariants(r) {
+    var out = {}, i, c;
+    function put(s) {
+      if (!s || s === r || s.length < 2 || !isKanaOnly(s)) return;
+      if (/[ぢづ]/.test(s) && !/[ぢづ]/.test(r)) return;
+      out[s] = 1;
+    }
+    for (i = 0; i < r.length; i++) {
+      c = r.charAt(i);
+      if (D_DAKU[c]) put(r.slice(0, i) + D_DAKU[c] + r.slice(i + 1));
+      if (D_UNDAKU[c]) put(r.slice(0, i) + D_UNDAKU[c] + r.slice(i + 1));
+      if (D_HANDAKU[c] && i > 0) put(r.slice(0, i) + D_HANDAKU[c] + r.slice(i + 1));
+      if (c === "っ") put(r.slice(0, i) + r.slice(i + 1));
+      if ("ゃゅょ".indexOf(c) !== -1) put(r.slice(0, i) + { "ゃ": "や", "ゅ": "ゆ", "ょ": "よ" }[c] + r.slice(i + 1));
+      if ("ゃゅょ".indexOf(c) !== -1 && r.charAt(i + 1) === "う") put(r.slice(0, i + 1) + r.slice(i + 2));
+      if ("ゅょ".indexOf(c) !== -1 && r.charAt(i + 1) !== "う") put(r.slice(0, i + 1) + "う" + r.slice(i + 1));
+      if (c === "う" && i > 0 && "おこそとのほもよろごぞどぼぽ".indexOf(r.charAt(i - 1)) !== -1) put(r.slice(0, i) + r.slice(i + 1));
+      if (i > 0 && i < r.length - 1 && "かきくけこさしすせそたちつてとぱぴぷぺぽ".indexOf(c) !== -1 && "っん".indexOf(r.charAt(i - 1)) === -1 && "きちくつ".indexOf(r.charAt(i - 1)) !== -1) put(r.slice(0, i - 1) + "っ" + r.slice(i));
+    }
+    return Object.keys(out);
+  }
+  function takeDistinct(target, tiers, n, bad) {
+    var got = [], seen = {};
+    seen[target] = 1;
+    (bad || []).forEach(function (b) { seen[b] = 1; });
+    tiers.forEach(function (tier) {
+      shuffleIds(tier.list).forEach(function (x) {
+        if (got.length >= n || tier.taken >= (tier.max == null ? 99 : tier.max)) return;
+        if (!x || seen[x]) return;
+        seen[x] = 1;
+        got.push(x);
+        tier.taken = (tier.taken || 0) + 1;
+      });
+    });
+    return got.length >= n ? got : null;
+  }
+  function mcq(section, key, srcType, item, promptHtml, ask, correct, distractors, labelLang) {
+    var opts = shuffleIds([correct].concat(distractors));
+    return { section: section, key: key, srcType: srcType, item: item, prompt: promptHtml, ask: ask, kind: "mcq", lang: labelLang || "ja",
+      options: opts, answer: opts.indexOf(correct) };
+  }
+  function underlineIn(sentence, word, replacement) {
+    var i = sentence.indexOf(word);
+    if (i === -1) return null;
+    return esc(sentence.slice(0, i)) + '<u class="dr-u">' + esc(replacement == null ? word : replacement) + "</u>" + esc(sentence.slice(i + word.length));
+  }
+  function blankIn(sentence, word) {
+    var i = sentence.indexOf(word);
+    if (i === -1) return null;
+    return { html: esc(sentence.slice(0, i)) + '<span class="dr-blank">（　　）</span>' + esc(sentence.slice(i + word.length)), frame: sentence.slice(0, i) + "\u0000" + sentence.slice(i + word.length) };
+  }
+  function wordPrompt(it, shown) {
+    var html = it.example ? underlineIn(it.example, it.kanji, shown) : null;
+    return html || '<u class="dr-u">' + esc(shown == null ? it.kanji : shown) + "</u>";
+  }
+
+  /* ---------- question builders (return null when the item cannot make a fair question) ---------- */
+  function buildDrillQuestion(section, it, data) {
+    data = data || drillData();
+    var key = section + ":" + it.id;
+    if (section === "read") {
+      if (!dHasKanji(it.kanji) || !it.reading || !isKanaOnly(it.reading) || it.reading === it.kanji) return null;
+      var sameKanjiReadings = (data.known.filter(function (w) { return w.kanji === it.kanji; })).map(function (w) { return w.reading; });
+      var shared = {};
+      it.kanji.split("").forEach(function (c) {
+        (data.byChar[c] || []).forEach(function (w) { if (w.kanji !== it.kanji && Math.abs(w.reading.length - it.reading.length) <= 1 && isKanaOnly(w.reading)) shared[w.reading] = 1; });
+      });
+      var sameLen = data.known.filter(function (w) { return w.kanji !== it.kanji && w.reading.length === it.reading.length && isKanaOnly(w.reading); }).map(function (w) { return w.reading; });
+      var d = takeDistinct(it.reading, [
+        { list: Object.keys(shared), max: 1 },
+        { list: readingVariants(it.reading), max: 2 },
+        { list: Object.keys(shared) },
+        { list: sameLen }
+      ], 3, sameKanjiReadings);
+      if (!d) return null;
+      return mcq(section, key, "word", it, wordPrompt(it), "How is the underlined word read?", it.reading, d);
+    }
+    if (section === "ortho") {
+      if (!dHasKanji(it.kanji) || !it.reading || !isKanaOnly(it.reading) || it.reading === it.kanji) return null;
+      var hasCtx = !!(it.example && it.example.indexOf(it.kanji) !== -1);
+      var shape = dShape(it.kanji);
+      var homo = (data.byReading[it.reading] || []).filter(function (w) { return w.kanji !== it.kanji && dHasKanji(w.kanji) && !dOverlap(w.english, it.english); }).map(function (w) { return w.kanji; });
+      var share = {};
+      it.kanji.split("").forEach(function (c) {
+        (data.byChar[c] || []).forEach(function (w) { if (w.kanji !== it.kanji && w.kanji.length === it.kanji.length && dShape(w.kanji) === shape && w.reading !== it.reading) share[w.kanji] = 1; });
+      });
+      var sameShape = data.known.filter(function (w) { return w.kanji !== it.kanji && dHasKanji(w.kanji) && w.kanji.length === it.kanji.length && dShape(w.kanji) === shape && w.reading !== it.reading; }).map(function (w) { return w.kanji; });
+      var od = takeDistinct(it.kanji, [
+        { list: hasCtx ? homo : [], max: 1 },
+        { list: Object.keys(share), max: 2 },
+        { list: sameShape }
+      ], 3);
+      if (!od) return null;
+      return mcq(section, key, "word", it, wordPrompt(it, it.reading), "Which is the right way to write the underlined word?", it.kanji, od);
+    }
+    if (section === "form") {
+      var k = it.kanji;
+      if (k.length < 3) return null;
+      var tries = [];
+      if (dHasKanji(k.charAt(0)) && data.kanjiSet[k.slice(1)] && dHasKanji(k.charAt(1)) && data.pre[k.charAt(0)]) tries.push("pre");
+      if (dHasKanji(k.charAt(k.length - 1)) && data.kanjiSet[k.slice(0, -1)] && dHasKanji(k.charAt(k.length - 2)) && data.suf[k.charAt(k.length - 1)]) tries.push("suf");
+      if (!tries.length) return null;
+      var mode = null, affix = null, rest = null, fd = null;
+      shuffleIds(tries).some(function (m) {
+        var af = m === "pre" ? k.charAt(0) : k.charAt(k.length - 1);
+        var rs = m === "pre" ? k.slice(1) : k.slice(0, -1);
+        var stats = m === "pre" ? data.pre : data.suf;
+        var others = Object.keys(stats).filter(function (a) {
+          return a !== af && !data.kanjiSet[m === "pre" ? a + rs : rs + a];
+        });
+        var got = takeDistinct(af, [{ list: others }], 3);
+        if (!got) return false;
+        mode = m; affix = af; rest = rs; fd = got;
+        return true;
+      });
+      if (!fd) return null;
+      var shownWord = mode === "pre" ? "（　）" + rest : rest + "（　）";
+      var fp = it.example && it.example.indexOf(k) !== -1
+        ? esc(it.example.slice(0, it.example.indexOf(k))) + '<span class="dr-blank">' + esc(shownWord) + "</span>" + esc(it.example.slice(it.example.indexOf(k) + k.length))
+        : '<span class="dr-blank">' + esc(shownWord) + "</span>";
+      var q = mcq(section, key, "word", it, fp, mode === "pre" ? "Which prefix completes the word?" : "Which suffix completes the word?", affix, fd);
+      q.formMode = mode;
+      return q;
+    }
+    if (section === "ctx") {
+      if (!it.example || !it.english) return null;
+      var bl = blankIn(it.example, it.kanji);
+      if (!bl) return null;
+      var cshape = dShape(it.kanji);
+      function fitsFrame(w) {
+        var b2 = w.example ? blankIn(w.example, w.kanji) : null;
+        return b2 && b2.frame === bl.frame;
+      }
+      var mine = data.pool.filter(function (w) {
+        return w.id !== it.id && w.kanji !== it.kanji && w.reading !== it.reading && dShape(w.kanji) === cshape && !dOverlap(w.english, it.english) && !fitsFrame(w);
+      }).map(function (w) { return w.kanji; });
+      var more = data.known.filter(function (w) {
+        return !w.mine && w.kanji !== it.kanji && w.reading !== it.reading && dHasKanji(w.kanji) === dHasKanji(it.kanji) && dShape(w.kanji) === cshape && Math.abs(w.kanji.length - it.kanji.length) <= 1 && !dOverlap(w.english, it.english);
+      }).map(function (w) { return w.kanji; });
+      var cd = takeDistinct(it.kanji, [{ list: mine }, { list: more }], 3);
+      if (!cd) return null;
+      if (data.pool.filter(function (w) { return w.example && w.example.indexOf(w.kanji) !== -1; }).length < 4) return null;
+      return mcq(section, key, "word", it, bl.html, "Which word fits the blank?", it.kanji, cd);
+    }
+    if (section === "para") {
+      if (!it.english) return null;
+      var verb = dIsVerbish(it.english);
+      var mineE = data.pool.filter(function (w) { return w.id !== it.id && w.english && dIsVerbish(w.english) === verb && !dOverlap(w.english, it.english) && w.english.toLowerCase() !== it.english.toLowerCase(); }).map(function (w) { return w.english; });
+      var moreE = data.known.filter(function (w) { return !w.mine && w.english && w.kanji !== it.kanji && dIsVerbish(w.english) === verb && !dOverlap(w.english, it.english); }).map(function (w) { return w.english; });
+      var pd = takeDistinct(it.english, [{ list: mineE, max: 2 }, { list: moreE }, { list: mineE }], 3);
+      if (!pd) return null;
+      return mcq(section, key, "word", it, wordPrompt(it), "Which meaning is closest to the underlined word?", it.english, pd, "en");
+    }
+    if (section === "gram") {
+      if (!it.core || !it.example) return null;
+      var gb = blankIn(it.example, it.core);
+      if (!gb) return null;
+      var cores = {};
+      data.gpool.forEach(function (p) {
+        if (!p.core || p.id === it.id) return;
+        if (p.core === it.core || p.core.indexOf(it.core) !== -1 || it.core.indexOf(p.core) !== -1) return;
+        cores[p.core] = 1;
+      });
+      var gd = takeDistinct(it.core, [{ list: Object.keys(cores) }], 3);
+      if (!gd) return null;
+      return mcq(section, key, "gram", it, gb.html, "Which grammar fits the blank?", it.core, gd);
+    }
+    if (section === "comp") {
+      if (!it.example) return null;
+      var protect = it.core || it.kanji || "";
+      var chunks = sentenceChunks(it.example, protect);
+      if (!chunks) return null;
+      var order = [0, 1, 2, 3];
+      for (var g = 0; g < 10 && order.join() === "0,1,2,3"; g++) order = shuffleIds([0, 1, 2, 3]);
+      if (order.join() === "0,1,2,3") order = [2, 0, 3, 1];
+      var end = (it.example.match(/[。．！？!?]+$/) || [""])[0];
+      return { section: section, key: key, srcType: it.core != null ? "gram" : "word", item: it, kind: "comp", chunks: chunks, order: order, end: end,
+        ask: "Put the 4 parts in order. Which part goes in ★?" };
+    }
+    return null;
+  }
+  /* Split a sentence into exactly 4 parts at particles/commas; never split inside the protected word/pattern. */
+  function sentenceChunks(sentence, protect) {
+    var body = String(sentence || "").replace(/[。．！？!?]+$/, "");
+    if (body.length < 10) return null;
+    var pStart = protect ? body.indexOf(protect) : -1;
+    var pEnd = pStart === -1 ? -1 : pStart + protect.length - 1;
+    var P = "はがをにでへともの";
+    var segs = [], cur = "";
+    for (var i = 0; i < body.length; i++) {
+      var ch = body.charAt(i), next = body.charAt(i + 1), prev = body.charAt(i - 1), prev2 = body.charAt(i - 2);
+      cur += ch;
+      if (!next) break;
+      if (pStart !== -1 && i >= pStart && i < pEnd) continue;
+      if (ch === "、" || ch === "，") { segs.push(cur); cur = ""; continue; }
+      if (P.indexOf(ch) !== -1 && next !== "、" && P.indexOf(next) === -1) {
+        var prevOk = dHasKanji(prev) || /[\u30A0-\u30FF）」]/.test(prev) || (P.indexOf(prev) !== -1 && dHasKanji(prev2));
+        if (prevOk) { segs.push(cur); cur = ""; }
+      }
+    }
+    if (cur) segs.push(cur);
+    segs = segs.filter(Boolean);
+    if (segs.length < 4) return null;
+    while (segs.length > 4) {
+      var best = 0, bestLen = 1e9;
+      for (var j = 0; j < segs.length - 1; j++) {
+        var L = segs[j].length + segs[j + 1].length;
+        if (L < bestLen) { bestLen = L; best = j; }
+      }
+      segs.splice(best, 2, segs[best] + segs[best + 1]);
+    }
+    var seen = {};
+    for (var m = 0; m < 4; m++) {
+      if (segs[m].length < 2 || seen[segs[m]]) return null;
+      seen[segs[m]] = 1;
+    }
+    return segs;
+  }
+
+  /* ---------- results log + derived redo state ---------- */
+  function drillStatusMap() {
+    var by = {};
+    (progress.drillLog || []).forEach(function (e) { if (e && e.key) (by[e.key] = by[e.key] || []).push(e); });
+    var today = todayISO();
+    var out = {};
+    Object.keys(by).forEach(function (k) {
+      var list = by[k].slice().sort(function (a, b) { return String(a.at).localeCompare(String(b.at)); });
+      var st = { key: k, section: list[0].section, state: "new", prio: 0, badDay: null, lastAt: null, lastDay: null, n: list.length, waiting: false };
+      list.forEach(function (e) {
+        st.lastAt = e.at;
+        st.lastDay = e.day;
+        if (!e.ok || e.mark === "wrong") { st.state = "redo"; st.prio = 3; st.badDay = e.day; st.waiting = false; }
+        else if (e.mark === "lucky") { st.state = "redo"; st.prio = 2; st.badDay = e.day; st.waiting = false; }
+        else if (e.mark === "elim") { st.state = "redo"; st.prio = 1; st.badDay = e.day; st.waiting = false; }
+        else if (st.state === "redo" && st.badDay && String(e.day) <= String(st.badDay)) { st.prio = 0.5; st.waiting = true; }
+        else { st.state = "done"; st.prio = 0; st.waiting = false; }
+      });
+      st.due = st.state === "redo" && !(st.waiting && st.lastDay === today);
+      out[k] = st;
+    });
+    return out;
+  }
+  function drillSummary(data) {
+    var status = drillStatusMap();
+    var res = { total: { redo: 0, waiting: 0 }, sections: {} };
+    DRILL_SECTIONS.forEach(function (s) {
+      var row = { available: data.items[s.id].length, redo: 0, waiting: 0, knew: 0, elim: 0, lucky: 0, wrong: 0, keys: {} };
+      data.items[s.id].forEach(function (it) {
+        var key = s.id + ":" + it.id;
+        row.keys[key] = 1;
+        var st = status[key];
+        if (st && st.state === "redo") { if (st.due) row.redo += 1; else row.waiting += 1; }
+      });
+      res.sections[s.id] = row;
+      res.total.redo += row.redo;
+      res.total.waiting += row.waiting;
+    });
+    (progress.drillLog || []).forEach(function (e) {
+      var row = e && res.sections[e.section];
+      if (!row) return;
+      var m = !e.ok ? "wrong" : e.mark;
+      if (row[m] != null) row[m] += 1;
+    });
+    res.status = status;
+    return res;
+  }
+  function drillRecord(q, ok, mark) {
+    if (!Array.isArray(progress.drillLog)) progress.drillLog = [];
+    progress.drillLog.push({ id: newId("dr"), key: q.key, section: q.section, src: q.item.id, at: new Date().toISOString(), day: todayISO(), ok: !!ok, mark: mark });
+    bumpStat("drillQs", 1);
+    if (q.srcType === "word" && q.section !== "comp") {
+      var w = wordBy(q.item.id);
+      if (w && !ok) {
+        var daily = progress.words.indexOf(w) !== -1 ? w : ensureDailyFromChapterWord(w);
+        var today = todayISO();
+        var dupe = (progress.mistakes || []).some(function (m) { return m && m.wordId === daily.id && !m.resolved && m.day === today; });
+        if (!dupe) logCouldNotRead(daily, today);
+      } else if (w && ok && mark === "knew") {
+        var own = null;
+        for (var i = 0; i < progress.words.length; i++) if (progress.words[i].kanji === w.kanji && progress.words[i].reading === w.reading) own = progress.words[i];
+        if (own) recordCorrectReview(own.id);
+      }
+    }
+    saveProgress();
+  }
+
+  /* ---------- sessions ---------- */
+  function startDrill(scope) {
+    var data = drillData();
+    var sum = drillSummary(data);
+    var secs = scope === "mixed" || scope === "redo" ? DRILL_SECTIONS.map(function (s) { return s.id; }) : [scope];
+    var cands = [];
+    secs.forEach(function (sid) { data.items[sid].forEach(function (it) { cands.push({ sid: sid, it: it, key: sid + ":" + it.id, st: sum.status[sid + ":" + it.id] }); }); });
+    var redo = cands.filter(function (c) { return c.st && c.st.state === "redo" && c.st.due; })
+      .sort(function (a, b) { return (b.st.prio - a.st.prio) || String(a.st.lastAt).localeCompare(String(b.st.lastAt)); });
+    var picked = redo.slice(0, DRILL_SIZE);
+    if (scope !== "redo") {
+      var fresh = shuffleIds(cands.filter(function (c) { return !c.st; }));
+      var done = shuffleIds(cands.filter(function (c) { return c.st && c.st.state !== "redo"; })).sort(function (a, b) { return String(a.st.lastAt).localeCompare(String(b.st.lastAt)); });
+      var waiting = cands.filter(function (c) { return c.st && c.st.state === "redo" && !c.st.due; });
+      if (scope === "mixed") {
+        /* spread across sections */
+        var bySec = {};
+        fresh.concat(done).forEach(function (c) { (bySec[c.sid] = bySec[c.sid] || []).push(c); });
+        var keysS = shuffleIds(Object.keys(bySec)), progressMade = true;
+        while (picked.length < DRILL_SIZE && progressMade) {
+          progressMade = false;
+          keysS.forEach(function (sid) { if (picked.length < DRILL_SIZE && bySec[sid].length) { picked.push(bySec[sid].shift()); progressMade = true; } });
+        }
+      } else {
+        fresh.concat(done).forEach(function (c) { if (picked.length < DRILL_SIZE) picked.push(c); });
+      }
+      waiting.forEach(function (c) { if (picked.length < DRILL_SIZE) picked.push(c); });
+    }
+    var seenSrc = {};
+    var qs = [];
+    picked.forEach(function (c) {
+      if (seenSrc[c.key]) return;
+      seenSrc[c.key] = 1;
+      var q = buildDrillQuestion(c.sid, c.it, data);
+      if (q) { q.wasRedo = !!(c.st && c.st.state === "redo"); qs.push(q); }
+    });
+    if (!qs.length) return false;
+    ui.drill = { scope: scope, qs: qs, index: 0, answered: null, results: [], placed: [null, null, null, null], counted: false };
+    return true;
+  }
+  function drillCardHtml(q) {
+    var it = q.item, html = '<div class="card dr-card">';
+    if (q.srcType === "gram") {
+      html += '<div class="jp" lang="ja">' + gPatternHtml(it) + "</div>";
+      html += gReadingLine(it);
+      html += '<p class="meaning">' + esc(it.meaning) + "</p>";
+      if (it.usage) html += '<p class="muted">' + esc(it.usage) + "</p>";
+    } else {
+      html += '<div class="jp" lang="ja">' + (furigana && it.reading && it.reading !== it.kanji ? "<ruby>" + esc(it.kanji) + "<rt>" + esc(it.reading) + "</rt></ruby>" : esc(it.kanji)) + "</div>";
+      html += '<p class="meaning" lang="ja">' + esc(it.reading) + "</p>";
+      html += '<p class="meaning">' + esc(it.english) + "</p>";
+    }
+    if (it.example) html += '<p lang="ja">' + esc(it.example) + "</p>";
+    html += "</div>";
+    return html;
+  }
+  function renderDrillSession() {
+    var st = ui.drill;
+    var label = st.scope === "redo" ? "Redo" : st.scope === "mixed" ? "Mixed" : (drillSection(st.scope) || {}).name;
+    if (st.index >= st.qs.length) {
+      if (!st.counted) { st.counted = true; bumpStat("drills", 1); saveProgress(); }
+      var c = { knew: 0, elim: 0, lucky: 0, wrong: 0 };
+      st.results.forEach(function (r) { c[r] = (c[r] || 0) + 1; });
+      var right = st.results.length - c.wrong;
+      var html = "<h1>Drill done</h1><p class=\"mode-label\">" + esc(label) + "</p>";
+      html += '<p class="score">' + right + " / " + st.results.length + " right</p>";
+      html += '<p class="dr-break">Knew it ' + c.knew + " · Elimination " + c.elim + " · Lucky guess " + c.lucky + " · Wrong " + c.wrong + "</p>";
+      if (c.wrong + c.elim + c.lucky) html += "<p>Wrong answers, eliminations and lucky guesses went to Redo. Clear them with “Knew it”, best on another day.</p>";
+      html += '<button type="button" class="primary" data-act="dr-home">Back to Drill</button>';
+      main.innerHTML = html;
+      return;
+    }
+    var q = st.qs[st.index];
+    var sec = drillSection(q.section);
+    var html2 = '<p class="muted">' + esc(label) + " · " + (st.index + 1) + " of " + st.qs.length + (q.wasRedo ? ' · <span class="badge">redo</span>' : "") + "</p>";
+    html2 += '<p class="mode-label">' + sec.n + ". " + esc(sec.name) + ' <span lang="ja">' + esc(sec.jp) + "</span></p>";
+    html2 += '<p class="dr-ask">' + esc(q.ask) + "</p>";
+    var a = st.answered;
+    if (q.kind === "comp") {
+      html2 += '<div class="dr-slots" lang="ja">';
+      for (var s = 0; s < 4; s++) {
+        var idx = a ? (a.ok ? s : st.placed[s]) : st.placed[s];
+        var txt = idx == null ? "" : q.chunks[idx];
+        html2 += '<button type="button" class="dr-slot' + (s === 2 ? " star" : "") + (txt ? " filled" : "") + '" data-act="dr-unslot" data-slot="' + s + '"' + (a ? " disabled" : "") + '><span class="dr-num">' + (s === 2 ? "★" : s + 1) + "</span>" + esc(txt || "") + "</button>";
+      }
+      html2 += '<span class="dr-end">' + esc(q.end || "") + "</span></div>";
+      if (!a) {
+        html2 += '<div class="dr-chunks" lang="ja">';
+        q.order.forEach(function (ci) {
+          var used = st.placed.indexOf(ci) !== -1;
+          html2 += '<button type="button" class="choice dr-chunk" data-act="dr-chunk" data-i="' + ci + '"' + (used ? " disabled" : "") + ">" + esc(q.chunks[ci]) + "</button>";
+        });
+        html2 += "</div>";
+        if (st.placed.filter(function (x) { return x != null; }).length === 4) html2 += '<button type="button" class="primary" data-act="dr-check">Check</button>';
+        else html2 += '<p class="muted">Tap the parts in order. Tap a filled box to take it back.</p>';
+      }
+    } else {
+      html2 += '<p class="dr-prompt" lang="ja">' + q.prompt + "</p>";
+      q.options.forEach(function (o, i) {
+        var cls = "choice";
+        if (a) {
+          if (i === q.answer) cls += " right";
+          else if (i === a.chosen) cls += " wrong";
+        }
+        html2 += '<button type="button" class="' + cls + '" lang="' + q.lang + '" data-act="dr-pick" data-i="' + i + '"' + (a ? " disabled" : "") + ">" + (i + 1) + ". " + esc(o) + "</button>";
+      });
+    }
+    if (a) {
+      html2 += '<p class="' + (a.ok ? "dr-ok" : "warn dr-bad") + '">' + (a.ok ? "Right." : "Not this one.") + "</p>";
+      if (q.kind === "comp") {
+        html2 += '<p lang="ja" class="dr-full">' + q.chunks.map(function (c2, ci2) { return ci2 === 2 ? "<b>" + esc(c2) + "</b>" : esc(c2); }).join("") + esc(q.end || "") + "</p>";
+      }
+      html2 += drillCardHtml(q);
+      if (a.ok && !a.marked) {
+        html2 += '<p class="mode-label">How did you get it?</p><div class="dr-marks">';
+        html2 += '<button type="button" class="primary" data-act="dr-mark" data-mark="knew">Knew it</button>';
+        html2 += '<button type="button" class="secondary" data-act="dr-mark" data-mark="elim">Elimination</button>';
+        html2 += '<button type="button" class="secondary" data-act="dr-mark" data-mark="lucky">Lucky guess</button></div>';
+      } else {
+        html2 += '<p class="muted">Added to Redo.</p><button type="button" class="primary" data-act="dr-next">Next</button>';
+      }
+    }
+    html2 += '<p><button type="button" class="secondary" data-act="dr-home">Stop</button></p>';
+    main.innerHTML = html2;
+  }
+  function renderDrill() {
+    if (ui.drill) { renderDrillSession(); return; }
+    var data = drillData();
+    var sum = drillSummary(data);
+    var html = "<h1>Drill</h1>";
+    html += '<p class="muted">JLPT N2 language knowledge, built only from your words, chapters and grammar. About ' + DRILL_SIZE + " questions a round; redo items come first.</p>";
+    html += '<div class="actions">';
+    if (sum.total.redo) html += '<button type="button" class="primary" data-act="dr-start" data-scope="redo"><span class="action-title">Redo · ' + sum.total.redo + '</span><span class="action-desc">Wrong answers first, then lucky guesses, then eliminations.</span></button>';
+    else html += '<div class="dr-none"><b>Redo · 0</b> <span class="muted">' + (sum.total.waiting ? sum.total.waiting + " waiting for another day." : "Nothing to redo.") + "</span></div>";
+    var anyAvail = DRILL_SECTIONS.some(function (s) { return sum.sections[s.id].available; });
+    if (anyAvail) html += '<button type="button" class="secondary" data-act="dr-start" data-scope="mixed"><span class="action-title">Mixed round</span><span class="action-desc">All unlocked sections together.</span></button>';
+    html += "</div>";
+    if (sum.total.redo && sum.total.waiting) html += '<p class="muted">' + sum.total.waiting + " more waiting for another day (you knew them today; check again tomorrow).</p>";
+    html += '<h2>Sections</h2><div class="dr-sections">';
+    DRILL_SECTIONS.forEach(function (s) {
+      var r = sum.sections[s.id];
+      var tried = r.knew + r.elim + r.lucky + r.wrong;
+      if (r.available) {
+        html += '<button type="button" class="dr-sec" data-act="dr-start" data-scope="' + s.id + '">';
+        html += '<span class="dr-sec-top"><span class="dr-sec-name">' + s.n + ". " + esc(s.name) + ' <span lang="ja">' + esc(s.jp) + '</span></span><span class="dr-count">' + r.available + "</span></span>";
+        html += '<span class="dr-sec-desc">' + esc(s.desc) + "</span>";
+        html += '<span class="dr-sec-meta">' + (r.redo ? '<span class="badge">redo ' + r.redo + "</span> " : "") + (tried ? "knew " + r.knew + " · elim " + r.elim + " · lucky " + r.lucky + " · wrong " + r.wrong : "not tried yet") + "</span>";
+        html += "</button>";
+      } else {
+        html += '<div class="dr-sec locked"><span class="dr-sec-top"><span class="dr-sec-name">' + s.n + ". " + esc(s.name) + ' <span lang="ja">' + esc(s.jp) + '</span></span><span class="dr-count">0</span></span>';
+        html += '<span class="dr-sec-desc"><b>Locked.</b> ' + esc(s.need) + "</span></div>";
+      }
+    });
+    html += "</div>";
+    html += '<p class="note">After a right answer, tap <b>Knew it</b>, <b>Elimination</b> or <b>Lucky guess</b>. Only “Knew it” clears an item; after a mistake it needs “Knew it” on a later day. Wrong word answers also show up in Wrong words. <a href="#stats">Stats</a></p>';
+    main.innerHTML = html;
+  }
+
   function pageName() {
     var hash = (location.hash || "#today").replace("#", "");
-    var open = ["today", "chapters", "combos", "wrong", "stats", "add", "grammar"];
+    var open = ["today", "drill", "chapters", "combos", "wrong", "stats", "add", "grammar"];
     if (todayISO() >= EXAM) open = open.concat(["reading", "listening", "test"]);
     if (open.indexOf(hash) === -1) return "today";
     return hash;
@@ -1091,7 +1666,7 @@ if (typeof document !== "undefined") {
     var page = pageName();
     nav.querySelectorAll("a").forEach(function (a) {
       var id = (a.getAttribute("href") || "").replace("#", "");
-      if (id === page || (page === "drill" && id === "today")) a.setAttribute("aria-current", "page");
+      if (id === page || (page === "stats" && id === "today")) a.setAttribute("aria-current", "page");
       else a.removeAttribute("aria-current");
     });
     if (furiBtn) furiBtn.setAttribute("aria-pressed", furigana ? "true" : "false");
@@ -1154,6 +1729,10 @@ if (typeof document !== "undefined") {
       html += "<li><span>" + esc(d.date.slice(5)) + '</span><span class="bar-track"><span class="bar-fill" style="width:' + pct + '%"></span></span><span>' + esc(formatMinutes(d.activeMs)) + "</span></li>";
     });
     html += "</ul></div>";
+    var drTot = { q: 0, r: 0, ms: 0 };
+    recent.forEach(function (d) { drTot.q += d.drillQs || 0; drTot.r += d.drills || 0; drTot.ms += d.drillMs || 0; });
+    html += '<p class="mode-label">Drill</p>';
+    html += '<p class="muted">Today: ' + (today.drillQs || 0) + " questions, " + (today.drills || 0) + " rounds, " + esc(formatMinutes(today.drillMs || 0)) + ". All days: " + drTot.q + " questions, " + drTot.r + " rounds, " + esc(formatMinutes(drTot.ms)) + '. <a href="#drill">Open Drill</a></p>';
     html += '<p class="mode-label">Completions</p>';
     html += '<p class="muted">Days with activity in the same window.</p>';
     html += '<div class="stat-scroll">';
@@ -1162,7 +1741,9 @@ if (typeof document !== "undefined") {
       if (!dayHasStudy(d)) return;
       listed = true;
       html += '<div class="item"><div class="w">' + esc(d.date) + "</div>";
-      html += '<div class="m">' + esc(formatMinutes(d.activeMs)) + " · sessions " + (d.sessions || 0) + " · quizzes " + (d.quizzes || 0) + " · levels " + (d.levels || 0) + " · words " + (d.wordsGraded || 0) + "</div></div>";
+      html += '<div class="m">' + esc(formatMinutes(d.activeMs)) + " · sessions " + (d.sessions || 0) + " · quizzes " + (d.quizzes || 0) + " · levels " + (d.levels || 0) + " · words " + (d.wordsGraded || 0) + "</div>";
+      if (d.drillQs || d.drills || d.drillMs) html += '<div class="m">Drill: ' + (d.drillQs || 0) + " questions · " + (d.drills || 0) + " rounds · " + esc(formatMinutes(d.drillMs || 0)) + "</div>";
+      html += "</div>";
     });
     if (!listed) html += '<div class="empty"><p>No study logged yet. Time counts while this page is open and visible.</p></div>';
     html += "</div>";
@@ -2060,11 +2641,13 @@ if (typeof document !== "undefined") {
       location.hash = "#" + page;
       return;
     }
+    if (page !== activePage) { flushActiveTime(); activePage = page; }
     if (page === "today") {
       if (session && session.day === todayISO()) renderSession();
       else renderHome();
     } else if (page === "chapters") renderChapters();
     else if (page === "combos") renderCombos();
+    else if (page === "drill") renderDrill();
     else if (page === "wrong") renderWrong();
     else if (page === "stats") renderStats();
     else if (page === "add") renderAdd();
@@ -2084,6 +2667,7 @@ if (typeof document !== "undefined") {
       doneDays: progress.doneDays,
       chapters: progress.chapters || [],
       grammarChapters: progress.grammarChapters || [],
+      drillLog: progress.drillLog || [],
       stats: progress.stats || { days: {} }
     }, null, 2)], { type: "application/json" });
     var a = document.createElement("a");
@@ -2162,6 +2746,69 @@ if (typeof document !== "undefined") {
         else render();
       } else render();
       return;
+    }
+    if (act === "dr-start") {
+      if (!startDrill(b.getAttribute("data-scope"))) { window.alert("No questions available here yet."); return; }
+      render();
+      window.scrollTo(0, 0);
+      return;
+    }
+    if (act === "dr-home") {
+      ui.drill = null;
+      render();
+      return;
+    }
+    if (ui.drill && /^dr-/.test(act)) {
+      var dst = ui.drill, dq = dst.qs[dst.index];
+      if (!dq) return;
+      if (act === "dr-pick") {
+        if (dst.answered) return;
+        var di = parseInt(b.getAttribute("data-i"), 10);
+        dst.answered = { chosen: di, ok: di === dq.answer };
+        if (!dst.answered.ok) { drillRecord(dq, false, "wrong"); dst.results.push("wrong"); }
+        render();
+        return;
+      }
+      if (act === "dr-chunk") {
+        if (dst.answered) return;
+        var ci = parseInt(b.getAttribute("data-i"), 10);
+        if (dst.placed.indexOf(ci) !== -1) return;
+        for (var si = 0; si < 4; si++) if (dst.placed[si] == null) { dst.placed[si] = ci; break; }
+        render();
+        return;
+      }
+      if (act === "dr-unslot") {
+        if (dst.answered) return;
+        dst.placed[parseInt(b.getAttribute("data-slot"), 10)] = null;
+        render();
+        return;
+      }
+      if (act === "dr-check") {
+        if (dst.answered || dst.placed.filter(function (x) { return x != null; }).length !== 4) return;
+        var cok = dst.placed.join(",") === "0,1,2,3";
+        dst.answered = { ok: cok };
+        if (!cok) { drillRecord(dq, false, "wrong"); dst.results.push("wrong"); }
+        render();
+        return;
+      }
+      if (act === "dr-mark") {
+        if (!dst.answered || !dst.answered.ok || dst.answered.marked) return;
+        var mark = b.getAttribute("data-mark");
+        if (["knew", "elim", "lucky"].indexOf(mark) === -1) return;
+        dst.answered.marked = true;
+        drillRecord(dq, true, mark);
+        dst.results.push(mark);
+        dst.index += 1; dst.answered = null; dst.placed = [null, null, null, null];
+        render();
+        window.scrollTo(0, 0);
+        return;
+      }
+      if (act === "dr-next") {
+        dst.index += 1; dst.answered = null; dst.placed = [null, null, null, null];
+        render();
+        window.scrollTo(0, 0);
+        return;
+      }
     }
     if (act === "sync-connect") {
       var tokBox = document.getElementById("sync-token");
@@ -2839,6 +3486,7 @@ if (typeof document !== "undefined") {
           doneDays: (data.doneDays && typeof data.doneDays === "object") ? data.doneDays : {},
           chapters: Array.isArray(data.chapters) ? data.chapters : [],
           grammarChapters: Array.isArray(data.grammarChapters) ? data.grammarChapters : [],
+          drillLog: Array.isArray(data.drillLog) ? data.drillLog : [],
           stats: (data.stats && typeof data.stats === "object") ? data.stats : { days: {} }
         });
         writeLocal(progress);

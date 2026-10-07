@@ -51,6 +51,20 @@ Kanji, reading, English, and an optional example. Saved in `localStorage` under 
 
 Under the single form on **Add** there is a **Paste many words** box and an **Add all words** button. Leave a blank line between words; each word is 3 or 4 lines (word, reading, meaning, optional example). One line `word | reading | meaning | example` also works. A live count (“24 words found · 24 will be added”) shows before saving. Words already saved with the same word and reading are skipped. New words wait in Today, 20 a day, until first studied.
 
+## Drill
+
+Tab **Drill** (練), second in the bottom bar. Stats moved off the bar to keep 7 tabs; open it from **Open Stats** on Today (or the Stats link at the bottom of Drill). Sections follow the JLPT N2 language-knowledge paper and each shows how many questions it can make from your data:
+
+1. Kanji reading 漢字読み — underlined word in its example sentence, pick the reading (wrong options: near-miss readings such as dropped long vowels/dakuten, and readings of words that share a kanji).
+2. Orthography 表記 — underlined kana, pick the kanji (homophones only when a sentence gives context).
+3. Word formation 語形成 — beta; unlocks once 4 of your words are prefix + another known word (or word + suffix).
+4. Context 文脈規定 — example sentence with the word blanked (needs the exact word in the example; words whose own example fits the same frame are never used as wrong options).
+5. Paraphrase 言い換え類義 — pick the closest English meaning (options never share a key word with the right one).
+6. Grammar form 文法形式の判断 — grammar example with the pattern blanked; needs 4+ grammar points.
+7. Sentence composition ★ 文の組み立て — example split into 4 parts at particles; tap them into order.
+
+Only your words, chapter words and grammar make questions; the Combos list is used for wrong options. A right answer asks **Knew it / Elimination / Lucky guess**; a wrong one shows Next. Each answer is stored in `drillLog` (append-only, merged by id across devices). Wrong, Lucky guess and Elimination go to **Redo** (that priority order); “Knew it” clears an item, but after a mistake it must be on a later day. Rounds are 10 questions, redo first. Wrong word answers also log to Wrong words (once per word per day). Today and Stats show drill questions, rounds and time.
+
 ## Grammar readings
 
 Gram paste format: `pattern | reading | meaning | usage | example` (reading, usage and example optional). Old lines `pattern | meaning | usage [| example]` still parse as before: field 2 counts as a reading only when it is kana only and the pattern has kanji (or there are 5+ fields). Blocks also work: one field per line, blank line between points. Readings show under the pattern in the list, on the back of flashcards and in quiz feedback; with Furigana on, the pattern also gets ruby on the front. Quiz · type accepts the pattern or its reading (〜 optional). Each point in “Points in this chapter” has an **Edit** button to add or fix the reading (and other fields). Edits set `updatedAt`; on merge/sync the newer edit wins per point (chapter renames too).
