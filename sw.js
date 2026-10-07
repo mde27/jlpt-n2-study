@@ -1,5 +1,5 @@
 "use strict";
-var CACHE = "jlpt-n2-v15";
+var CACHE = "jlpt-n2-v16";
 var FILES = [
   "./",
   "./index.html",
@@ -32,18 +32,17 @@ self.addEventListener("activate", function (event) {
 self.addEventListener("fetch", function (event) {
   var req = event.request;
   if (req.method !== "GET") return;
+  var sameOrigin = new URL(req.url).origin === self.location.origin;
+  /* Network first so a new app.js is picked up right away; cache is only the offline fallback. */
   event.respondWith(
-    caches.match(req).then(function (hit) {
-      if (hit) return hit;
-      return fetch(req).then(function (res) {
-        if (res && res.ok && new URL(req.url).origin === self.location.origin) {
-          var copy = res.clone();
-          caches.open(CACHE).then(function (cache) { cache.put(req, copy); });
-        }
-        return res;
-      }).catch(function () {
-        return caches.match("./index.html");
-      });
+    fetch(req, { cache: "no-cache" }).then(function (res) {
+      if (res && res.ok && sameOrigin) {
+        var copy = res.clone();
+        caches.open(CACHE).then(function (cache) { cache.put(req, copy); });
+      }
+      return res;
+    }).catch(function () {
+      return caches.match(req).then(function (hit) { return hit || caches.match("./index.html"); });
     })
   );
 });

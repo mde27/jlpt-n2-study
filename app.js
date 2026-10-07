@@ -289,6 +289,7 @@ if (typeof document !== "undefined") {
     });
     if (!data.stats || typeof data.stats !== "object") data.stats = { days: {} };
     if (!data.stats.days || typeof data.stats.days !== "object") data.stats.days = {};
+    if (!data.deleted || typeof data.deleted !== "object") data.deleted = {};
     data.version = data.version || 2;
     return data;
   }
@@ -378,31 +379,74 @@ if (typeof document !== "undefined") {
   try {
     if (localStorage.getItem(KEY) == null && !progressIsEmpty(progress)) writeLocal(progress);
   } catch (e) {}
+  /* Merge two progress copies: union by id, never drop data unless tombstoned. "a" wins on scalar fields. */
+  function byIdMerge(a, b, tomb, inner) {
+    var out = [], seen = {};
+    (a || []).forEach(function (x) { if (x && x.id && !tomb[x.id]) { seen[x.id] = out.length; out.push(x); } else if (x && !x.id) out.push(x); });
+    (b || []).forEach(function (y) {
+      if (!y || !y.id || tomb[y.id]) return;
+      if (seen[y.id] == null) { seen[y.id] = out.length; out.push(y); }
+      else if (inner) inner(out[seen[y.id]], y);
+    });
+    return out;
+  }
+  function mergeProgress(a, b) {
+    if (!b || progressIsEmpty(b) && !(b.deleted && Object.keys(b.deleted).length)) return a;
+    if (!a || progressIsEmpty(a) && !(a.deleted && Object.keys(a.deleted).length)) return normalizeProgress(b);
+    var tomb = {};
+    [a.deleted, b.deleted].forEach(function (d) { if (d) Object.keys(d).forEach(function (k) { tomb[k] = d[k]; }); });
+    a.deleted = tomb;
+    a.chapters = byIdMerge(a.chapters, b.chapters, tomb, function (x, y) { x.words = byIdMerge(x.words, y.words, tomb); });
+    a.grammarChapters = byIdMerge(a.grammarChapters, b.grammarChapters, tomb, function (x, y) { x.points = byIdMerge(x.points, y.points, tomb); });
+    a.words = byIdMerge(a.words, b.words, tomb, function (x, y) {
+      if (JSON.stringify(y).length > JSON.stringify(x).length && (y.lastDay || "") >= (x.lastDay || "")) Object.keys(y).forEach(function (k) { x[k] = y[k]; });
+    });
+    var mk = {};
+    (a.mistakes || []).forEach(function (m) { if (m) mk[m.at + "|" + m.wordId] = 1; });
+    (b.mistakes || []).forEach(function (m) { if (m && !mk[m.at + "|" + m.wordId]) a.mistakes.push(m); });
+    Object.keys(b.doneDays || {}).forEach(function (k) { if (!a.doneDays[k]) a.doneDays[k] = b.doneDays[k]; });
+    var bd = (b.stats && b.stats.days) || {};
+    Object.keys(bd).forEach(function (k) {
+      var x = a.stats.days[k], y = bd[k];
+      if (!x) { a.stats.days[k] = y; return; }
+      ["activeMs", "sessions", "quizzes", "levels", "wordsGraded"].forEach(function (f) { if ((y[f] || 0) > (x[f] || 0)) x[f] = y[f]; });
+      (y.levelKeys || []).forEach(function (lk) { if (!x.levelKeys) x.levelKeys = []; if (x.levelKeys.indexOf(lk) === -1) x.levelKeys.push(lk); });
+    });
+    return a;
+  }
+  function tombstone(id) {
+    if (!id) return;
+    if (!progress.deleted || typeof progress.deleted !== "object") progress.deleted = {};
+    progress.deleted[id] = Date.now();
+  }
+  function readLocalParsed() {
+    try { var r = readLocalRaw(); return r ? normalizeProgress(JSON.parse(r)) : null; } catch (e) { return null; }
+  }
   function saveProgress() {
+    /* Another tab/app instance may have written since we loaded: fold its data in, never clobber it. */
+    progress = mergeProgress(progress, readLocalParsed());
     writeLocal(progress);
     idbSetProgress(progress);
   }
+  window.addEventListener("storage", function (e) {
+    if (e.key !== KEY || !e.newValue) return;
+    try { progress = mergeProgress(progress, normalizeProgress(JSON.parse(e.newValue))); render(); } catch (err) {}
+  });
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(function () {}); } catch (e) {}
   function restoreFromMirrors() {
     return idbGetProgress().then(function (idbRaw) {
       var idbData = null;
       try {
         if (idbRaw && typeof idbRaw === "object") idbData = normalizeProgress(idbRaw);
       } catch (e) { idbData = null; }
-      var lsEmpty = progressIsEmpty(progress);
-      var idbEmpty = progressIsEmpty(idbData);
-      if (lsEmpty && !idbEmpty) {
-        progress = idbData;
-        writeLocal(progress);
-        return "idb-to-ls";
+      if (!idbData) {
+        if (!progressIsEmpty(progress)) return idbSetProgress(progress).then(function () { return "ls-to-idb"; });
+        return "empty";
       }
-      if (!lsEmpty && idbEmpty) {
-        return idbSetProgress(progress).then(function () { return "ls-to-idb"; });
-      }
-      if (!lsEmpty && !idbEmpty) {
-        return idbSetProgress(progress).then(function () { return "sync-idb"; });
-      }
-      return "empty";
-    }).catch(function () {
+      progress = mergeProgress(progress, idbData);
+      writeLocal(progress);
+      return idbSetProgress(progress).then(function () { return "merged"; });
+    }).then(function (r) { return r; }, function () {
       if (!progressIsEmpty(progress)) writeLocal(progress);
       return "idb-unavailable";
     });
@@ -1820,6 +1864,7 @@ if (typeof document !== "undefined") {
       var wid = b.getAttribute("data-word");
       if (!delCh || !wid) return;
       if (!window.confirm("Delete this word from the chapter?")) return;
+      tombstone(wid);
       delCh.words = (delCh.words || []).filter(function (w) { return w.id !== wid; });
       saveProgress();
       render();
@@ -1830,6 +1875,7 @@ if (typeof document !== "undefined") {
       var kill = chapterBy(killId);
       if (!kill) return;
       if (!window.confirm("Delete chapter “" + kill.name + "”? Words in it will be removed. Mistake history stays.")) return;
+      tombstone(killId);
       progress.chapters = (progress.chapters || []).filter(function (c) { return c.id !== killId; });
       ui.chapterId = null;
       ui.editMsg = null;
@@ -2052,6 +2098,7 @@ if (typeof document !== "undefined") {
       var pid = b.getAttribute("data-point");
       if (!delG || !pid) return;
       if (!window.confirm("Delete this grammar point?")) return;
+      tombstone(pid);
       delG.points = (delG.points || []).filter(function (p) { return p.id !== pid; });
       saveProgress();
       render();
@@ -2062,6 +2109,7 @@ if (typeof document !== "undefined") {
       var killCh = gChapterBy(killG);
       if (!killCh) return;
       if (!window.confirm("Delete grammar chapter “" + killCh.name + "”?")) return;
+      tombstone(killG);
       progress.grammarChapters = (progress.grammarChapters || []).filter(function (c) { return c.id !== killG; });
       ui.gChapterId = null;
       ui.gEditMsg = null;
@@ -2339,7 +2387,8 @@ if (typeof document !== "undefined") {
           grammarChapters: Array.isArray(data.grammarChapters) ? data.grammarChapters : [],
           stats: (data.stats && typeof data.stats === "object") ? data.stats : { days: {} }
         });
-        saveProgress();
+        writeLocal(progress);
+        idbSetProgress(progress);
         session = null;
         saveSession();
         location.hash = "#today";
