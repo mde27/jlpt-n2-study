@@ -527,3 +527,26 @@ button.dr-sec:active { background: var(--petal); }
 .dr-chunk:disabled { opacity: 0.35; }
 .dr-full { font-size: 1.2rem; }
 .dr-full b { color: var(--accent); }
+
+/* Drill: built-in N2 set */
+.dr-bi { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.dr-bi h2 { margin: 0; }
+.dr-bi-counts { margin: 0; padding-left: 1.2em; font-size: 0.95rem; }
+.dr-imp { text-align: left; }
+.dr-imp[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.dr-star-list summary { cursor: pointer; font-weight: 650; color: var(--accent); }
+.dr-star-list ul { margin: 6px 0 0; padding-left: 1.2em; }
+.dr-credits { font-size: 0.82rem; }
+.dr-sec-wrap { display: flex; flex-direction: column; gap: 4px; }
+.dr-src { display: flex; gap: 4px; }
+.dr-src button {
+  flex: 1 1 0; min-height: 36px; padding: 4px 6px; border-radius: 10px; border: 1px solid var(--line);
+  background: transparent; color: var(--muted); font-size: 0.85rem;
+}
+.dr-src button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 700; }
+.dr-src-n { opacity: 0.8; font-weight: 400; }
+.dr-bi-tag { margin: 0 0 4px; font-size: 0.8rem; color: var(--accent); font-weight: 650; }
+.dr-star { color: var(--accent); }
+.dr-note { font-size: 0.95rem; color: var(--ink); background: var(--petal); border-radius: 10px; padding: 6px 10px; }
+.dr-fill { color: var(--accent); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+.dr-pre { font-size: 1.15rem; margin: 0 0 6px; }

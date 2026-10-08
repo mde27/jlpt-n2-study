@@ -1081,7 +1081,7 @@ if (typeof document !== "undefined") {
   var DRILL_SECTIONS = [
     { id: "read", n: 1, jp: "漢字読み", name: "Kanji reading", desc: "Pick the reading of the underlined word.", need: "Add words written with kanji (Add or Chapters)." },
     { id: "ortho", n: 2, jp: "表記", name: "Orthography", desc: "Pick the kanji for the underlined kana.", need: "Add words written with kanji." },
-    { id: "form", n: 3, jp: "語形成", name: "Word formation", desc: "Pick the prefix or suffix that completes the word. Beta: wrong options are only checked against your words and Combos, so rarely another one could also be a real word.", need: "Coming later: unlocks when at least 4 of your words are a prefix + another word you have (大掃除 counts once 掃除 is also in your words), or 4 are a word + suffix (研究者 with 研究)." },
+    { id: "form", n: 3, jp: "語形成", name: "Word formation", desc: "Pick the prefix or suffix that completes the word. Built-in items are checked against JMdict; for items made from your own words the wrong options are only checked against your words and Combos.", need: "For your own items: unlocks when at least 4 of your words are a prefix + another word you have (大掃除 counts once 掃除 is also in your words), or 4 are a word + suffix (研究者 with 研究)." },
     { id: "ctx", n: 4, jp: "文脈規定", name: "Context", desc: "Pick the word that fills the blank.", need: "Add example sentences that contain the word exactly as written (給料 → 給料をもらう。). Needs 4+ such words." },
     { id: "para", n: 5, jp: "言い換え類義", name: "Paraphrase", desc: "Pick the closest meaning of the underlined word.", need: "Add words with English meanings." },
     { id: "gram", n: 6, jp: "文法形式の判断", name: "Grammar form", desc: "Pick the grammar pattern that fills the blank.", need: "Paste at least 4 grammar points, with examples that contain the pattern (〜に際して → 卒業に際して…)." },
@@ -1165,7 +1165,7 @@ if (typeof document !== "undefined") {
     var gpool = drillGrammarPool();
     var sig = pool.map(function (w) { return w.id + w.kanji + w.reading + w.english.length + w.example.length; }).join("|") + "#" +
       gpool.map(function (p) { return p.id + p.pattern + p.example.length; }).join("|") + "#" + comboIndex().list.length;
-    if (drillCache.sig === sig) return drillCache.data;
+    if (drillCache.sig === sig) return assembleDrillItems(drillCache.data);
     var known = knownWords(pool);
     var byReading = {}, byChar = {}, kanjiSet = {};
     known.forEach(function (w) {
@@ -1182,16 +1182,147 @@ if (typeof document !== "undefined") {
       if (dHasKanji(head) && dHasKanji(restP.charAt(0)) && kanjiSet[restP]) (pre[head] = pre[head] || []).push(k);
       if (dHasKanji(tail) && dHasKanji(restS.charAt(restS.length - 1)) && kanjiSet[restS]) (suf[tail] = suf[tail] || []).push(k);
     });
-    var data = { pool: pool, gpool: gpool, known: known, byReading: byReading, byChar: byChar, kanjiSet: kanjiSet, pre: pre, suf: suf, items: {} };
+    var data = { pool: pool, gpool: gpool, known: known, byReading: byReading, byChar: byChar, kanjiSet: kanjiSet, pre: pre, suf: suf, mine: {}, items: {}, bi: {} };
     /* Which items can make a question in each section (built once per data change). */
     DRILL_SECTIONS.forEach(function (s) {
       var ok = [];
       var src = s.id === "gram" ? gpool : s.id === "comp" ? pool.concat(gpool) : pool;
       src.forEach(function (it) { if (buildDrillQuestion(s.id, it, data)) ok.push(it); });
-      data.items[s.id] = ok;
+      data.mine[s.id] = ok;
     });
     drillCache = { sig: sig, data: data };
+    return assembleDrillItems(data);
+  }
+
+  /* ---------- built-in N2 set (data/drills.js, loaded only when Drill opens) ----------
+     Kept apart from her own items: own keys look like "read:w123", built-in keys like "read:b:v:警備".
+     Per-section source (My items / Built-in / Both) and "★ Important only" are device settings. */
+  var DRILL_SRC_KEY = "jlpt-n2-drill-src";
+  var DRILL_IMP_KEY = "jlpt-n2-drill-imp";
+  function drillSrcPrefs() {
+    try { var o = JSON.parse(localStorage.getItem(DRILL_SRC_KEY) || "{}"); return o && typeof o === "object" ? o : {}; } catch (e) { return {}; }
+  }
+  function drillSrcFor(sid) {
+    var v = drillSrcPrefs()[sid];
+    return v === "mine" || v === "builtin" ? v : "both";
+  }
+  function setDrillSrc(sid, v) {
+    var o = drillSrcPrefs();
+    if (v === "both") delete o[sid]; else o[sid] = v;
+    try { localStorage.setItem(DRILL_SRC_KEY, JSON.stringify(o)); } catch (e) { /* private mode */ }
+  }
+  function drillImpOnly() {
+    try { return localStorage.getItem(DRILL_IMP_KEY) === "1"; } catch (e) { return false; }
+  }
+  function setDrillImpOnly(on) {
+    try { if (on) localStorage.setItem(DRILL_IMP_KEY, "1"); else localStorage.removeItem(DRILL_IMP_KEY); } catch (e) { /* private mode */ }
+  }
+  var builtinLoad = { loading: false, failed: false };
+  var builtinIdx = null;
+  function ensureBuiltin() {
+    if (window.DRILLS || builtinLoad.loading) return;
+    builtinLoad.loading = true;
+    builtinLoad.failed = false;
+    var sc = document.createElement("script");
+    sc.src = "data/drills.js";
+    sc.async = true;
+    sc.onload = function () {
+      builtinLoad.loading = false;
+      builtinIdx = null;
+      if (pageName() === "drill" && !ui.drill) render();
+    };
+    sc.onerror = function () {
+      builtinLoad.loading = false;
+      builtinLoad.failed = true;
+      sc.parentNode && sc.parentNode.removeChild(sc);
+      if (pageName() === "drill" && !ui.drill) render();
+    };
+    document.head.appendChild(sc);
+  }
+  function builtinItems() {
+    if (builtinIdx) return builtinIdx;
+    var D = window.DRILLS;
+    if (!D) return null;
+    var out = { read: [], ortho: [], form: [], ctx: [], para: [], gram: [], comp: [], points: {}, star: [], credits: D.credits || "" };
+    (D.gram || []).forEach(function (g) {
+      var pt = { pid: g[0], pattern: g[1], reading: g[2], meaning: g[3], note: g[4], star: !!g[5], n: (g[6] || []).length };
+      out.points[pt.pid] = pt;
+      if (pt.star) out.star.push(pt);
+      (g[6] || []).forEach(function (q, i) {
+        out.gram.push({ id: "b:g:" + pt.pid + ":" + (i + 1), bi: "gram", point: pt, star: pt.star, sentence: q[0], answer: q[1], wrong: q.slice(2, 5) });
+      });
+    });
+    (D.comp || []).forEach(function (c) {
+      var pt = out.points[c[0]] || null;
+      out.comp.push({ id: "b:c:" + c[0], bi: "comp", point: pt, star: !!(pt && pt.star), pre: c[1], parts: c[2], post: c[3] });
+    });
+    (D.vocab || []).forEach(function (v) {
+      out.read.push({ id: "b:v:" + v[0], bi: "read", kanji: v[0], reading: v[1], english: v[2], sentence: v[3], wrong: v[4] });
+      out.ortho.push({ id: "b:v:" + v[0], bi: "ortho", kanji: v[0], reading: v[1], english: v[2], sentence: v[3], wrong: v[5] });
+    });
+    (D.ctx || []).forEach(function (x) {
+      out.ctx.push({ id: "b:x:" + x[1], bi: "ctx", sentence: x[0], kanji: x[1], reading: x[2], english: x[3], wrong: x[4] });
+    });
+    (D.para || []).forEach(function (x) {
+      out.para.push({ id: "b:p:" + x[1], bi: "para", sentence: x[0], kanji: x[1], reading: x[2], english: x[3], answer: x[4], wrong: x[5] });
+    });
+    (D.form || []).forEach(function (x) {
+      out.form.push({ id: "b:f:" + x[3], bi: "form", sentence: x[0], answer: x[1], wrong: x[2], kanji: x[3], reading: x[4], english: x[5], mode: x[6] });
+    });
+    builtinIdx = out;
+    return out;
+  }
+  /* Built-in items for a section after the ★ filter (grammar + composition only). */
+  function builtinFor(sid) {
+    var B = builtinItems();
+    if (!B) return [];
+    var list = B[sid] || [];
+    if ((sid === "gram" || sid === "comp") && drillImpOnly()) list = list.filter(function (it) { return it.star; });
+    return list;
+  }
+  function assembleDrillItems(data) {
+    data.items = {};
+    data.bi = {};
+    DRILL_SECTIONS.forEach(function (s) {
+      var mine = data.mine[s.id] || [], bi = builtinFor(s.id), src = drillSrcFor(s.id);
+      data.bi[s.id] = bi;
+      data.items[s.id] = src === "mine" ? mine : src === "builtin" ? bi : mine.concat(bi);
+    });
     return data;
+  }
+  function biBlank(sentence, label) {
+    var i = sentence.indexOf("＿＿");
+    return esc(sentence.slice(0, i)) + '<span class="dr-blank">' + esc(label || "（　　）") + "</span>" + esc(sentence.slice(i + 2));
+  }
+  function biUnderline(sentence) {
+    var a = sentence.indexOf("{"), b = sentence.indexOf("}");
+    return esc(sentence.slice(0, a)) + '<u class="dr-u">' + esc(sentence.slice(a + 1, b)) + "</u>" + esc(sentence.slice(b + 1));
+  }
+  function buildBuiltinQuestion(section, it) {
+    var key = section + ":" + it.id, q = null;
+    if (section === "read") q = mcq(section, key, "bword", it, underlineIn(it.sentence, it.kanji), "How is the underlined word read?", it.reading, it.wrong);
+    else if (section === "ortho") q = mcq(section, key, "bword", it, underlineIn(it.sentence, it.kanji, it.reading), "Which is the right way to write the underlined word?", it.kanji, it.wrong);
+    else if (section === "ctx") q = mcq(section, key, "bword", it, biBlank(it.sentence), "Which word fits the blank?", it.kanji, it.wrong);
+    else if (section === "para") q = mcq(section, key, "bword", it, biUnderline(it.sentence), "Which is closest in meaning to the underlined part?", it.answer, it.wrong);
+    else if (section === "form") {
+      q = mcq(section, key, "bword", it, biBlank(it.sentence, "（　）"), it.mode === "pre" ? "Which prefix completes the word?" : "Which suffix completes the word?", it.answer, it.wrong);
+      q.formMode = it.mode;
+    } else if (section === "gram") q = mcq(section, key, "bgram", it, biBlank(it.sentence), "Which grammar fits the blank?", it.answer, it.wrong);
+    else if (section === "comp") {
+      var order = [0, 1, 2, 3];
+      for (var g = 0; g < 10 && order.join() === "0,1,2,3"; g++) order = shuffleIds([0, 1, 2, 3]);
+      if (order.join() === "0,1,2,3") order = [2, 0, 3, 1];
+      q = { section: section, key: key, srcType: "bgram", item: it, kind: "comp", chunks: it.parts.slice(), order: order, pre: it.pre, end: it.post,
+        ask: "Put the 4 parts in order. Which part goes in ★?" };
+    }
+    if (q) q.bi = true;
+    return q;
+  }
+  /* Her own word with the same spelling+reading as a built-in item (built-in mistakes only feed Wrong words then). */
+  function myWordFor(kanji, reading) {
+    var pool = drillWordPool();
+    for (var i = 0; i < pool.length; i++) if (pool[i].kanji === kanji && pool[i].reading === reading) return wordBy(pool[i].id);
+    return null;
   }
 
   /* ---------- distractor helpers ---------- */
@@ -1257,6 +1388,7 @@ if (typeof document !== "undefined") {
 
   /* ---------- question builders (return null when the item cannot make a fair question) ---------- */
   function buildDrillQuestion(section, it, data) {
+    if (it && it.bi) return buildBuiltinQuestion(section, it);
     data = data || drillData();
     var key = section + ":" + it.id;
     if (section === "read") {
@@ -1469,8 +1601,10 @@ if (typeof document !== "undefined") {
     if (!Array.isArray(progress.drillLog)) progress.drillLog = [];
     progress.drillLog.push({ id: newId("dr"), key: q.key, section: q.section, src: q.item.id, at: new Date().toISOString(), day: todayISO(), ok: !!ok, mark: mark });
     bumpStat("drillQs", 1);
-    if (q.srcType === "word" && q.section !== "comp") {
-      var w = wordBy(q.item.id);
+    var w = null;
+    if (q.srcType === "word" && q.section !== "comp") w = wordBy(q.item.id);
+    else if (q.srcType === "bword" && q.item.reading) w = myWordFor(q.item.kanji, q.item.reading);
+    if (w) {
       if (w && !ok) {
         var daily = progress.words.indexOf(w) !== -1 ? w : ensureDailyFromChapterWord(w);
         var today = todayISO();
@@ -1489,17 +1623,27 @@ if (typeof document !== "undefined") {
   function startDrill(scope) {
     var data = drillData();
     var sum = drillSummary(data);
-    var secs = scope === "mixed" || scope === "redo" ? DRILL_SECTIONS.map(function (s) { return s.id; }) : [scope];
+    var secs = scope === "mixed" || scope === "redo" || scope === "builtin" ? DRILL_SECTIONS.map(function (s) { return s.id; }) : [scope];
     var cands = [];
-    secs.forEach(function (sid) { data.items[sid].forEach(function (it) { cands.push({ sid: sid, it: it, key: sid + ":" + it.id, st: sum.status[sid + ":" + it.id] }); }); });
+    secs.forEach(function (sid) {
+      var list = scope === "builtin" ? data.bi[sid] : data.items[sid];
+      list.forEach(function (it) { cands.push({ sid: sid, it: it, key: sid + ":" + it.id, st: sum.status[sid + ":" + it.id] }); });
+    });
     var redo = cands.filter(function (c) { return c.st && c.st.state === "redo" && c.st.due; })
       .sort(function (a, b) { return (b.st.prio - a.st.prio) || String(a.st.lastAt).localeCompare(String(b.st.lastAt)); });
     var picked = redo.slice(0, DRILL_SIZE);
     if (scope !== "redo") {
-      var fresh = shuffleIds(cands.filter(function (c) { return !c.st; }));
+      var freshAll = cands.filter(function (c) { return !c.st; });
+      /* With "Both", alternate her items and built-in ones so her own words are not drowned out. */
+      var freshMine = shuffleIds(freshAll.filter(function (c) { return !c.it.bi; })), freshBi = shuffleIds(freshAll.filter(function (c) { return c.it.bi; }));
+      var fresh = [];
+      while (freshMine.length || freshBi.length) {
+        if (freshMine.length) fresh.push(freshMine.shift());
+        if (freshBi.length) fresh.push(freshBi.shift());
+      }
       var done = shuffleIds(cands.filter(function (c) { return c.st && c.st.state !== "redo"; })).sort(function (a, b) { return String(a.st.lastAt).localeCompare(String(b.st.lastAt)); });
       var waiting = cands.filter(function (c) { return c.st && c.st.state === "redo" && !c.st.due; });
-      if (scope === "mixed") {
+      if (scope === "mixed" || scope === "builtin") {
         /* spread across sections */
         var bySec = {};
         fresh.concat(done).forEach(function (c) { (bySec[c.sid] = bySec[c.sid] || []).push(c); });
@@ -1527,6 +1671,7 @@ if (typeof document !== "undefined") {
   }
   function drillCardHtml(q) {
     var it = q.item, html = '<div class="card dr-card">';
+    if (it.bi) return builtinCardHtml(q);
     if (q.srcType === "gram") {
       html += '<div class="jp" lang="ja">' + gPatternHtml(it) + "</div>";
       html += gReadingLine(it);
@@ -1541,9 +1686,31 @@ if (typeof document !== "undefined") {
     html += "</div>";
     return html;
   }
+  function builtinCardHtml(q) {
+    var it = q.item, html = '<div class="card dr-card">';
+    html += '<p class="dr-bi-tag">Built-in N2 set' + (it.star ? " · ★ important" : "") + "</p>";
+    if (it.bi === "gram" || it.bi === "comp") {
+      var pt = it.point || {};
+      html += '<div class="jp" lang="ja">' + gPatternHtml(pt) + (pt.star ? ' <span class="dr-star" title="important">★</span>' : "") + "</div>";
+      html += gReadingLine(pt);
+      html += '<p class="meaning">' + esc(pt.meaning || "") + "</p>";
+      if (pt.note) html += '<p class="dr-note" lang="ja">' + esc(pt.note) + "</p>";
+      if (it.bi === "gram") html += '<p lang="ja">' + biBlank(it.sentence, it.answer).replace('class="dr-blank"', 'class="dr-fill"') + "</p>";
+    } else {
+      html += '<div class="jp" lang="ja">' + (furigana && it.reading && it.reading !== it.kanji ? "<ruby>" + esc(it.kanji) + "<rt>" + esc(it.reading) + "</rt></ruby>" : esc(it.kanji)) + "</div>";
+      if (it.reading && it.reading !== it.kanji) html += '<p class="meaning" lang="ja">' + esc(it.reading) + "</p>";
+      html += '<p class="meaning">' + esc(it.english) + "</p>";
+      if (it.bi === "para") html += '<p lang="ja">≈ ' + esc(it.answer) + "</p>" + '<p lang="ja">' + biUnderline(it.sentence) + "</p>";
+      else if (it.bi === "ctx") html += '<p lang="ja">' + biBlank(it.sentence, it.kanji).replace('class="dr-blank"', 'class="dr-fill"') + "</p>";
+      else if (it.bi === "form") html += '<p lang="ja">' + biBlank(it.sentence, it.answer).replace('class="dr-blank"', 'class="dr-fill"') + "</p>";
+      else html += '<p lang="ja">' + esc(it.sentence) + "</p>";
+    }
+    html += "</div>";
+    return html;
+  }
   function renderDrillSession() {
     var st = ui.drill;
-    var label = st.scope === "redo" ? "Redo" : st.scope === "mixed" ? "Mixed" : (drillSection(st.scope) || {}).name;
+    var label = st.scope === "redo" ? "Redo" : st.scope === "mixed" ? "Mixed" : st.scope === "builtin" ? "Built-in N2 set" : (drillSection(st.scope) || {}).name;
     if (st.index >= st.qs.length) {
       if (!st.counted) { st.counted = true; bumpStat("drills", 1); saveProgress(); }
       var c = { knew: 0, elim: 0, lucky: 0, wrong: 0 };
@@ -1564,6 +1731,7 @@ if (typeof document !== "undefined") {
     html2 += '<p class="dr-ask">' + esc(q.ask) + "</p>";
     var a = st.answered;
     if (q.kind === "comp") {
+      if (q.pre) html2 += '<p class="dr-pre" lang="ja">' + esc(q.pre) + "</p>";
       html2 += '<div class="dr-slots" lang="ja">';
       for (var s = 0; s < 4; s++) {
         var idx = a ? (a.ok ? s : st.placed[s]) : st.placed[s];
@@ -1595,7 +1763,7 @@ if (typeof document !== "undefined") {
     if (a) {
       html2 += '<p class="' + (a.ok ? "dr-ok" : "warn dr-bad") + '">' + (a.ok ? "Right." : "Not this one.") + "</p>";
       if (q.kind === "comp") {
-        html2 += '<p lang="ja" class="dr-full">' + q.chunks.map(function (c2, ci2) { return ci2 === 2 ? "<b>" + esc(c2) + "</b>" : esc(c2); }).join("") + esc(q.end || "") + "</p>";
+        html2 += '<p lang="ja" class="dr-full">' + esc(q.pre || "") + q.chunks.map(function (c2, ci2) { return ci2 === 2 ? "<b>" + esc(c2) + "</b>" : esc(c2); }).join("") + esc(q.end || "") + "</p>";
       }
       html2 += drillCardHtml(q);
       if (a.ok && !a.marked) {
@@ -1612,21 +1780,52 @@ if (typeof document !== "undefined") {
   }
   function renderDrill() {
     if (ui.drill) { renderDrillSession(); return; }
+    ensureBuiltin();
     var data = drillData();
     var sum = drillSummary(data);
+    var B = builtinItems();
     var html = "<h1>Drill</h1>";
-    html += '<p class="muted">JLPT N2 language knowledge, built only from your words, chapters and grammar. About ' + DRILL_SIZE + " questions a round; redo items come first.</p>";
+    html += '<p class="muted">JLPT N2 language knowledge from your own words, chapters and grammar, plus a built-in N2 set. About ' + DRILL_SIZE + " questions a round; redo items come first.</p>";
     html += '<div class="actions">';
     if (sum.total.redo) html += '<button type="button" class="primary" data-act="dr-start" data-scope="redo"><span class="action-title">Redo · ' + sum.total.redo + '</span><span class="action-desc">Wrong answers first, then lucky guesses, then eliminations.</span></button>';
     else html += '<div class="dr-none"><b>Redo · 0</b> <span class="muted">' + (sum.total.waiting ? sum.total.waiting + " waiting for another day." : "Nothing to redo.") + "</span></div>";
     var anyAvail = DRILL_SECTIONS.some(function (s) { return sum.sections[s.id].available; });
-    if (anyAvail) html += '<button type="button" class="secondary" data-act="dr-start" data-scope="mixed"><span class="action-title">Mixed round</span><span class="action-desc">All unlocked sections together.</span></button>';
+    if (anyAvail) html += '<button type="button" class="secondary" data-act="dr-start" data-scope="mixed"><span class="action-title">Mixed round</span><span class="action-desc">All unlocked sections together, using each section’s My items / Built-in choice.</span></button>';
     html += "</div>";
     if (sum.total.redo && sum.total.waiting) html += '<p class="muted">' + sum.total.waiting + " more waiting for another day (you knew them today; check again tomorrow).</p>";
+
+    /* Built-in N2 set */
+    var imp = drillImpOnly();
+    html += '<section class="card dr-bi"><h2>Built-in N2 set</h2>';
+    if (B) {
+      var nPts = Object.keys(B.points).length;
+      html += '<p class="muted">Original practice questions on high-frequency N2 grammar and vocabulary, kept separate from your own items. Wrong answers go to Redo (and to Wrong words only when the word is also in your list).</p>';
+      html += '<ul class="dr-bi-counts">';
+      DRILL_SECTIONS.forEach(function (s) {
+        var all = (B[s.id] || []).length;
+        var extra = s.id === "gram" ? " (" + nPts + " points, " + B.star.length + " ★)" : "";
+        html += "<li>" + s.n + ". " + esc(s.name) + ': <b>' + all + "</b>" + extra + "</li>";
+      });
+      html += "</ul>";
+      html += '<button type="button" class="secondary dr-imp" data-act="dr-imp" aria-pressed="' + (imp ? "true" : "false") + '">' + (imp ? "☑" : "☐") + " ★ Important only <span class=\"muted\">(grammar and composition)</span></button>";
+      html += '<div class="actions"><button type="button" class="primary" data-act="dr-start" data-scope="builtin"><span class="action-title">Built-in round</span><span class="action-desc">10 questions from the built-in set across all sections' + (imp ? " (★ only for grammar and composition)" : "") + ".</span></button></div>";
+      html += '<details class="dr-star-list"><summary>★ The ' + B.star.length + " important grammar points</summary><ul>";
+      B.star.forEach(function (pt) { html += '<li><span lang="ja">' + gPatternHtml(pt) + "</span> — " + esc(pt.meaning) + "</li>"; });
+      html += "</ul></details>";
+      html += '<p class="note dr-credits">' + esc(B.credits) + " Details in SOURCES.md.</p>";
+    } else if (builtinLoad.failed) {
+      html += '<p class="warn">Could not load the built-in set. If you are offline, open Drill once while online so it is saved for offline use.</p><button type="button" class="secondary" data-act="dr-reload-bi">Try again</button>';
+    } else {
+      html += '<p class="muted">Loading the built-in set…</p>';
+    }
+    html += "</section>";
+
     html += '<h2>Sections</h2><div class="dr-sections">';
     DRILL_SECTIONS.forEach(function (s) {
       var r = sum.sections[s.id];
       var tried = r.knew + r.elim + r.lucky + r.wrong;
+      var src = drillSrcFor(s.id), nMine = (data.mine[s.id] || []).length, nBi = (data.bi[s.id] || []).length;
+      html += '<div class="dr-sec-wrap">';
       if (r.available) {
         html += '<button type="button" class="dr-sec" data-act="dr-start" data-scope="' + s.id + '">';
         html += '<span class="dr-sec-top"><span class="dr-sec-name">' + s.n + ". " + esc(s.name) + ' <span lang="ja">' + esc(s.jp) + '</span></span><span class="dr-count">' + r.available + "</span></span>";
@@ -1635,11 +1834,17 @@ if (typeof document !== "undefined") {
         html += "</button>";
       } else {
         html += '<div class="dr-sec locked"><span class="dr-sec-top"><span class="dr-sec-name">' + s.n + ". " + esc(s.name) + ' <span lang="ja">' + esc(s.jp) + '</span></span><span class="dr-count">0</span></span>';
-        html += '<span class="dr-sec-desc"><b>Locked.</b> ' + esc(s.need) + "</span></div>";
+        var why = src === "builtin" ? (B ? "No built-in items with the current filter." : "The built-in set is still loading.") : esc(s.need) + (nBi && src === "mine" ? " Or switch to Built-in / Both." : "");
+        html += '<span class="dr-sec-desc"><b>Locked.</b> ' + why + "</span></div>";
       }
+      html += '<div class="dr-src" role="group" aria-label="Questions from">';
+      [["mine", "My items", nMine], ["builtin", "Built-in", nBi], ["both", "Both", nMine + nBi]].forEach(function (o) {
+        html += '<button type="button" data-act="dr-src" data-sec="' + s.id + '" data-src="' + o[0] + '" aria-pressed="' + (src === o[0] ? "true" : "false") + '">' + o[1] + ' <span class="dr-src-n">' + o[2] + "</span></button>";
+      });
+      html += "</div></div>";
     });
     html += "</div>";
-    html += '<p class="note">After a right answer, tap <b>Knew it</b>, <b>Elimination</b> or <b>Lucky guess</b>. Only “Knew it” clears an item; after a mistake it needs “Knew it” on a later day. Wrong word answers also show up in Wrong words. <a href="#stats">Stats</a></p>';
+    html += '<p class="note">After a right answer, tap <b>Knew it</b>, <b>Elimination</b> or <b>Lucky guess</b>. Only “Knew it” clears an item; after a mistake it needs “Knew it” on a later day. Wrong answers on your own words also show up in Wrong words. <a href="#stats">Stats</a></p>';
     main.innerHTML = html;
   }
 
@@ -2755,6 +2960,22 @@ if (typeof document !== "undefined") {
     }
     if (act === "dr-home") {
       ui.drill = null;
+      render();
+      return;
+    }
+    if (act === "dr-src") {
+      setDrillSrc(b.getAttribute("data-sec"), b.getAttribute("data-src"));
+      render();
+      return;
+    }
+    if (act === "dr-imp") {
+      setDrillImpOnly(!drillImpOnly());
+      render();
+      return;
+    }
+    if (act === "dr-reload-bi") {
+      builtinLoad.failed = false;
+      ensureBuiltin();
       render();
       return;
     }

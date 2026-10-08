@@ -57,13 +57,19 @@ Tab **Drill** (練), second in the bottom bar. Stats moved off the bar to keep 7
 
 1. Kanji reading 漢字読み — underlined word in its example sentence, pick the reading (wrong options: near-miss readings such as dropped long vowels/dakuten, and readings of words that share a kanji).
 2. Orthography 表記 — underlined kana, pick the kanji (homophones only when a sentence gives context).
-3. Word formation 語形成 — beta; unlocks once 4 of your words are prefix + another known word (or word + suffix).
+3. Word formation 語形成 — prefixes/suffixes (不・未・非・無・再・的・性・化・感・全・各・諸・率・場・家・気味・らしい). Open with the built-in set; from your own words it unlocks once 4 of them are prefix + another known word (or word + suffix).
 4. Context 文脈規定 — example sentence with the word blanked (needs the exact word in the example; words whose own example fits the same frame are never used as wrong options).
 5. Paraphrase 言い換え類義 — pick the closest English meaning (options never share a key word with the right one).
 6. Grammar form 文法形式の判断 — grammar example with the pattern blanked; needs 4+ grammar points.
 7. Sentence composition ★ 文の組み立て — example split into 4 parts at particles; tap them into order.
 
-Only your words, chapter words and grammar make questions; the Combos list is used for wrong options. A right answer asks **Knew it / Elimination / Lucky guess**; a wrong one shows Next. Each answer is stored in `drillLog` (append-only, merged by id across devices). Wrong, Lucky guess and Elimination go to **Redo** (that priority order); “Knew it” clears an item, but after a mistake it must be on a later day. Rounds are 10 questions, redo first. Wrong word answers also log to Wrong words (once per word per day). Today and Stats show drill questions, rounds and time.
+Your words, chapter words and grammar make questions (the Combos list is used for wrong options), plus the built-in set below.
+
+### Built-in N2 set
+
+`data/drills.js` (about 86 KB) is loaded only when Drill opens and is kept apart from your items (keys like `gram:b:g:nisaishite:1`). Each section has a **My items / Built-in / Both** switch (default Both, saved on the device), and the **Built-in N2 set** card has **★ Important only** (grammar + composition), a **Built-in round**, the list of ★ points and the credits line. Contents: 80 grammar points × 2 questions (25 ★) with a meaning + usage note in feedback, 60 composition sentences built on those points, 153 common N2 words for Kanji reading and Orthography (same sentence; near-miss readings, look-alike-kanji fake spellings checked to be non-words in JMdict), 55 context, 45 Japanese→Japanese paraphrase, 42 word-formation items. All questions and sentences are original. Built-in answers use the same Knew it / Elimination / Lucky guess + Redo flow and sync in `drillLog`; a wrong built-in answer goes to Redo only, and to Wrong words only if the same word (spelling + reading) is in your own list. With Both, a section round alternates your items and built-in ones.
+
+ A right answer asks **Knew it / Elimination / Lucky guess**; a wrong one shows Next. Each answer is stored in `drillLog` (append-only, merged by id across devices). Wrong, Lucky guess and Elimination go to **Redo** (that priority order); “Knew it” clears an item, but after a mistake it must be on a later day. Rounds are 10 questions, redo first. Wrong word answers also log to Wrong words (once per word per day). Today and Stats show drill questions, rounds and time.
 
 ## Grammar readings
 
@@ -91,5 +97,6 @@ Grammar, Reading, Listening, and Test stay hidden until 6 December 2026.
 - `data/reading.js`
 - `data/listening.js`
 - `data/mock.js`
+- `data/drills.js`
 
 `README.md` and `SOURCES.md` are not required to run the app.
