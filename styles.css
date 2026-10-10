@@ -550,3 +550,18 @@ button.dr-sec:active { background: var(--petal); }
 .dr-note { font-size: 0.95rem; color: var(--ink); background: var(--petal); border-radius: 10px; padding: 6px 10px; }
 .dr-fill { color: var(--accent); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
 .dr-pre { font-size: 1.15rem; margin: 0 0 6px; }
+
+/* Audio */
+.say-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.say { min-height: 40px; padding: 6px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--accent-soft); color: var(--accent); font-weight: 650; }
+.audio-card .row button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.audio-note { position: fixed; left: 12px; right: 12px; top: 8px; z-index: 50; background: var(--card); border: 1px solid var(--accent); border-radius: 14px; padding: 10px 14px; box-shadow: var(--shadow); }
+.audio-note p { margin: 0 0 8px; font-size: 0.92rem; }
+
+/* Completion counts + history */
+.cp-badge { display: inline-block; margin-left: 6px; padding: 0 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 0.8rem; font-weight: 700; vertical-align: middle; }
+.cp-line { margin-top: -4px; }
+.cp-history { margin: 16px 0; }
+.cp-list { list-style: none; padding: 0; margin: 0; font-size: 0.9rem; }
+.cp-list li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.cp-when { color: var(--muted); }

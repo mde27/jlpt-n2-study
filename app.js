@@ -82,7 +82,7 @@ function planFor(today) {
 }
 
 function blankProgress() {
-  return { version: 2, words: [], mistakes: [], doneDays: {}, chapters: [], grammarChapters: [], drillLog: [], stats: { days: {} } };
+  return { version: 2, words: [], mistakes: [], doneDays: {}, chapters: [], grammarChapters: [], drillLog: [], completions: [], stats: { days: {} } };
 }
 
 function newId(prefix) {
@@ -357,6 +357,7 @@ if (typeof document !== "undefined") {
       if (!ch.points) ch.points = [];
     });
     if (!Array.isArray(data.drillLog)) data.drillLog = [];
+    if (!Array.isArray(data.completions)) data.completions = [];
     if (!data.stats || typeof data.stats !== "object") data.stats = { days: {} };
     if (!data.stats.days || typeof data.stats.days !== "object") data.stats.days = {};
     if (!data.deleted || typeof data.deleted !== "object") data.deleted = {};
@@ -475,6 +476,7 @@ if (typeof document !== "undefined") {
       if (JSON.stringify(y).length > JSON.stringify(x).length && (y.lastDay || "") >= (x.lastDay || "")) Object.keys(y).forEach(function (k) { x[k] = y[k]; });
     });
     a.drillLog = byIdMerge(a.drillLog, b.drillLog, tomb);
+    a.completions = byIdMerge(a.completions || [], b.completions || [], tomb);
     var mk = {};
     (a.mistakes || []).forEach(function (m) { if (m) mk[m.at + "|" + m.wordId] = 1; });
     (b.mistakes || []).forEach(function (m) { if (m && !mk[m.at + "|" + m.wordId]) a.mistakes.push(m); });
@@ -1072,6 +1074,252 @@ if (typeof document !== "undefined") {
     }
     ui.chQuiz.feedback = { ok: ok };
     render();
+    autoSpeak(speechReadingOfWord(chapterWord));
+  }
+
+
+
+  /* ===================== Completions: finished runs per chapter / grammar chapter / Combos level =====================
+     One event per run that reached the end (any mode). Events have ids, so sync is a plain union. */
+  var COMPLETION_MODES = { flash: "Flashcards", choice: "Quiz · choose", type: "Quiz · type", dark: "Darker day" };
+  function recordCompletion(kind, ref, name, mode, score, total) {
+    if (!kind || !ref) return;
+    if (!Array.isArray(progress.completions)) progress.completions = [];
+    progress.completions.push({ id: newId("cp"), kind: kind, ref: String(ref), name: String(name || ""), mode: mode, score: score == null ? null : score, total: total, at: new Date().toISOString(), day: todayISO() });
+    saveProgress();
+  }
+  function completionsFor(kind, refOrPrefix, prefix) {
+    return (progress.completions || []).filter(function (e) {
+      if (!e || e.kind !== kind) return false;
+      return prefix ? String(e.ref).indexOf(refOrPrefix) === 0 : e.ref === refOrPrefix;
+    });
+  }
+  function completionBreakdown(list) {
+    var by = {};
+    list.forEach(function (e) { by[e.mode] = (by[e.mode] || 0) + 1; });
+    return Object.keys(COMPLETION_MODES).filter(function (m) { return by[m]; }).map(function (m) { return COMPLETION_MODES[m] + " " + by[m]; }).join(" · ");
+  }
+  function completionBadge(list) {
+    if (!list.length) return "";
+    return ' <span class="cp-badge" title="' + esc("Completed " + list.length + "×: " + completionBreakdown(list)) + '">×' + list.length + "</span>";
+  }
+  function completionLine(list) {
+    if (!list.length) return '<p class="muted cp-line">Not completed yet.</p>';
+    return '<p class="muted cp-line">Completed ' + list.length + "× · " + esc(completionBreakdown(list)) + "</p>";
+  }
+  function completionName(e) {
+    if (e.kind === "ch") { var c = chapterBy(e.ref); if (c && c.id === e.ref) return c.name; }
+    if (e.kind === "g") { var g = gChapterBy(e.ref); if (g) return g.name; }
+    return e.name || e.ref;
+  }
+  function completionHistoryHtml(kind) {
+    var list = (progress.completions || []).filter(function (e) { return e && e.kind === kind; })
+      .sort(function (a, b) { return String(b.at).localeCompare(String(a.at)); });
+    var h = '<section class="cp-history"><h2>History</h2>';
+    if (!list.length) return h + '<p class="muted">Finished runs (to the last card or question) show up here.</p></section>';
+    h += '<p class="muted">' + list.length + " finished run" + (list.length === 1 ? "" : "s") + " · " + esc(completionBreakdown(list)) + "</p><ul class=\"cp-list\">";
+    list.slice(0, 200).forEach(function (e) {
+      h += "<li><span class=\"cp-when\">" + esc(fmtWhen(e.at).replace(" Bucharest", "")) + "</span> · <b>" + esc(completionName(e)) + "</b> · " + esc(COMPLETION_MODES[e.mode] || e.mode) +
+        (e.score != null ? " · " + e.score + "/" + e.total : " · " + e.total + (e.total === 1 ? " card" : " cards")) + "</li>";
+    });
+    if (list.length > 200) h += "<li class=\"muted\">… " + (list.length - 200) + " older</li>";
+    return h + "</ul><p class=\"muted\">Times are Bucharest time.</p></section>";
+  }
+
+  /* ===================== Typed answers: the reading in kana =====================
+     Her phone keyboard turns a reading into kanji, so typed quizzes ask for the reading.
+     Accepted: hiragana, katakana (folded to hiragana), romaji (converted), spaces / 〜 / trailing
+     punctuation ignored, ー compared as the vowel it lengthens (けーたい = けいたい), and the exact
+     written form (in case the IME converted it). */
+  var TYPE_IN_ATTRS = ' type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" lang="ja" inputmode="text"';
+  var ROMA = { a: "あ", i: "い", u: "う", e: "え", o: "お", ka: "か", ki: "き", ku: "く", ke: "け", ko: "こ", sa: "さ", si: "し", shi: "し", su: "す", se: "せ", so: "そ",
+    ta: "た", ti: "ち", chi: "ち", tu: "つ", tsu: "つ", te: "て", to: "と", na: "な", ni: "に", nu: "ぬ", ne: "ね", no: "の", ha: "は", hi: "ひ", hu: "ふ", fu: "ふ", he: "へ", ho: "ほ",
+    ma: "ま", mi: "み", mu: "む", me: "め", mo: "も", ya: "や", yu: "ゆ", yo: "よ", ra: "ら", ri: "り", ru: "る", re: "れ", ro: "ろ", wa: "わ", wo: "を", nn: "ん", "n'": "ん",
+    ga: "が", gi: "ぎ", gu: "ぐ", ge: "げ", go: "ご", za: "ざ", zi: "じ", ji: "じ", zu: "ず", ze: "ぜ", zo: "ぞ", da: "だ", di: "ぢ", du: "づ", de: "で", do: "ど",
+    ba: "ば", bi: "び", bu: "ぶ", be: "べ", bo: "ぼ", pa: "ぱ", pi: "ぴ", pu: "ぷ", pe: "ぺ", po: "ぽ",
+    kya: "きゃ", kyu: "きゅ", kyo: "きょ", sha: "しゃ", shu: "しゅ", sho: "しょ", sya: "しゃ", syu: "しゅ", syo: "しょ", cha: "ちゃ", chu: "ちゅ", cho: "ちょ", tya: "ちゃ", tyu: "ちゅ", tyo: "ちょ",
+    nya: "にゃ", nyu: "にゅ", nyo: "にょ", hya: "ひゃ", hyu: "ひゅ", hyo: "ひょ", mya: "みゃ", myu: "みゅ", myo: "みょ", rya: "りゃ", ryu: "りゅ", ryo: "りょ",
+    gya: "ぎゃ", gyu: "ぎゅ", gyo: "ぎょ", ja: "じゃ", ju: "じゅ", jo: "じょ", jya: "じゃ", jyu: "じゅ", jyo: "じょ", zya: "じゃ", zyu: "じゅ", zyo: "じょ",
+    bya: "びゃ", byu: "びゅ", byo: "びょ", pya: "ぴゃ", pyu: "ぴゅ", pyo: "ぴょ", "-": "ー" };
+  function romajiToKana(s) {
+    var out = "", i = 0;
+    while (i < s.length) {
+      var c = s.charAt(i), nx = s.charAt(i + 1);
+      if (/[a-z]/.test(c) && c === nx && c !== "n" && "aiueo".indexOf(c) === -1) { out += "っ"; i += 1; continue; }
+      if (c === "n" && nx && "aiueoyn'".indexOf(nx) === -1) { out += "ん"; i += 1; continue; }
+      if (c === "n" && !nx) { out += "ん"; i += 1; continue; }
+      var hit = false;
+      for (var L = 3; L >= 1; L--) {
+        var k = s.substr(i, L);
+        if (ROMA[k]) { out += ROMA[k]; i += L; hit = true; break; }
+      }
+      if (!hit) { out += c; i += 1; }
+    }
+    return out;
+  }
+  var VOWEL_OF = {};
+  [["あかさたなはまやらわがざだばぱぁゃ", "あ"], ["いきしちにひみりぎじぢびぴぃ", "い"], ["うくすつぬふむゆるぐずづぶぷぅゅ", "う"], ["えけせてねへめれげぜでべぺぇ", "え"], ["おこそとのほもよろをごぞどぼぽぉょ", "お"]].forEach(function (g) {
+    g[0].split("").forEach(function (ch) { VOWEL_OF[ch] = g[1]; });
+  });
+  /* Base form: NFKC, no spaces/〜/punctuation, katakana → hiragana, romaji → kana. */
+  function kanaBase(s) {
+    s = String(s == null ? "" : s);
+    if (s.normalize) s = s.normalize("NFKC");
+    s = s.toLowerCase().replace(/[\s\u3000〜～~・･]+/g, "").replace(/[。．.、,，!！?？…」』）)]+$/g, "").replace(/^[「『（(]+/, "");
+    s = s.replace(/[\u30A1-\u30F6]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0x60); });
+    if (/[a-z]/.test(s)) s = romajiToKana(s);
+    return s;
+  }
+  /* All spellings of a kana string with each ー replaced by its vowel (e-row also い, o-row also う). */
+  function longVowelForms(s) {
+    var forms = [""];
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charAt(i);
+      if (c === "ー" && i > 0) {
+        var v = VOWEL_OF[s.charAt(i - 1)];
+        var opts = v ? [v] : ["ー"];
+        if (v === "え") opts.push("い");
+        if (v === "お") opts.push("う");
+        var next = [];
+        forms.forEach(function (f) { opts.forEach(function (o) { next.push(f + o); }); });
+        forms = next.slice(0, 32);
+      } else forms = forms.map(function (f) { return f + c; });
+    }
+    return forms;
+  }
+  function answerAlternatives(s) {
+    return String(s || "").split(/[\/／;；,，、]|\s+or\s+/).map(function (x) { return x.trim(); }).filter(Boolean);
+  }
+  /* True when `typed` is the reading (any accepted spelling) or exactly one of the written forms. */
+  function readingAnswerOk(typed, readings, writtenForms) {
+    var t = kanaBase(typed);
+    if (!t) return false;
+    var tf = longVowelForms(t);
+    var ok = false;
+    (readings || []).forEach(function (r) {
+      answerAlternatives(r).concat([r]).forEach(function (alt) {
+        var base = kanaBase(alt);
+        if (!base) return;
+        var rf = longVowelForms(base);
+        if (tf.some(function (x) { return rf.indexOf(x) !== -1; })) ok = true;
+      });
+    });
+    if (ok) return true;
+    (writtenForms || []).forEach(function (wf) {
+      answerAlternatives(wf).concat([wf]).forEach(function (alt) { if (alt && kanaBase(alt) === t) ok = true; });
+    });
+    return ok;
+  }
+  function wordTypedOk(typed, w) {
+    var reading = w.reading && String(w.reading).trim() ? w.reading : w.kanji;
+    return readingAnswerOk(typed, [reading], [w.kanji]);
+  }
+  function grammarTypedOk(typed, p) {
+    return readingAnswerOk(typed, p.reading ? [p.reading] : [p.pattern], [p.pattern]);
+  }
+
+  /* ===================== Audio (Web Speech API, ja-JP) =====================
+     Per-device settings in localStorage: auto-play on/off (default on), speed normal/slow.
+     Words are spoken from their READING so the voice cannot misread the kanji. */
+  var AUDIO_KEY = "jlpt-n2-audio";
+  var AUDIO_NOTE_KEY = "jlpt-n2-audio-note-seen";
+  var audioState = { voice: null, voicesKnown: false, noteNow: false };
+  function audioPrefs() {
+    var o = {};
+    try { o = JSON.parse(localStorage.getItem(AUDIO_KEY) || "{}") || {}; } catch (e) { o = {}; }
+    return { auto: o.auto !== false, rate: o.rate === "slow" ? "slow" : "normal" };
+  }
+  function setAudioPrefs(patch) {
+    var o = audioPrefs();
+    Object.keys(patch).forEach(function (k) { o[k] = patch[k]; });
+    try { localStorage.setItem(AUDIO_KEY, JSON.stringify(o)); } catch (e) { /* private mode */ }
+  }
+  function pickJaVoice() {
+    var ss = window.speechSynthesis;
+    if (!ss || !ss.getVoices) return null;
+    var vs = ss.getVoices() || [];
+    if (vs.length) audioState.voicesKnown = true;
+    var ja = vs.filter(function (v) { return /^ja([-_]|$)/i.test(String(v.lang || "")); });
+    ja.sort(function (a, b) { return (b.localService ? 1 : 0) - (a.localService ? 1 : 0); });
+    audioState.voice = ja[0] || null;
+    return audioState.voice;
+  }
+  if (window.speechSynthesis) {
+    pickJaVoice();
+    var onVoices = function () { audioState.voicesKnown = true; pickJaVoice(); };
+    if (window.speechSynthesis.addEventListener) window.speechSynthesis.addEventListener("voiceschanged", onVoices);
+    else window.speechSynthesis.onvoiceschanged = onVoices;
+  }
+  function speechReadingOfWord(w) {
+    if (!w) return "";
+    var r = String(w.reading || "").trim();
+    return r || String(w.kanji || "").trim();
+  }
+  function speechReadingOfPattern(p) {
+    if (!p) return "";
+    return String(p.reading || p.pattern || "").replace(/[〜～~]/g, "").split(/[\/／]/)[0].trim();
+  }
+  function speakJa(text) {
+    var ss = window.speechSynthesis;
+    text = String(text || "").trim();
+    if (!text) return false;
+    if (!ss || typeof window.SpeechSynthesisUtterance !== "function") { noteNoVoice(); return false; }
+    try {
+      ss.cancel();
+      if (ss.paused && ss.resume) ss.resume();
+      var u = new window.SpeechSynthesisUtterance(text);
+      u.lang = "ja-JP";
+      var v = audioState.voice || pickJaVoice();
+      if (v) u.voice = v;
+      u.rate = audioPrefs().rate === "slow" ? 0.7 : 1;
+      ss.speak(u);
+    } catch (e) { return false; }
+    if (!audioState.voice) {
+      if (audioState.voicesKnown) noteNoVoice();
+      else setTimeout(function () { pickJaVoice(); if (audioState.voicesKnown && !audioState.voice) noteNoVoice(); }, 1500);
+    }
+    return true;
+  }
+  function autoSpeak(text) {
+    if (audioPrefs().auto) speakJa(text);
+  }
+  function noteNoVoice() {
+    var seen = false;
+    try { seen = localStorage.getItem(AUDIO_NOTE_KEY) === "1"; } catch (e) { seen = false; }
+    if (seen || audioState.noteNow) return;
+    audioState.noteNow = true;
+    var box = document.getElementById("audio-note");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "audio-note";
+      box.className = "audio-note";
+      document.body.appendChild(box);
+    }
+    box.innerHTML = "<p><b>No Japanese voice on this device.</b> Audio needs one installed. Android: Settings → Speech / Text-to-speech → Google Speech Services → install Japanese voice data. iPhone/iPad: Settings → Accessibility → Spoken Content → Voices → Japanese, download a voice. Then reopen the app.</p>" +
+      '<button type="button" class="secondary" data-audio-note="ok">OK</button>';
+    box.querySelector("[data-audio-note]").addEventListener("click", function () {
+      try { localStorage.setItem(AUDIO_NOTE_KEY, "1"); } catch (e) { /* ignore */ }
+      box.parentNode && box.parentNode.removeChild(box);
+      audioState.noteNow = false;
+    });
+  }
+  /* Replay row for feedback cards: the word/pattern, plus the example sentence when there is one. */
+  function sayButtonsHtml(text, sentence) {
+    var h = '<div class="say-row">';
+    if (text) h += '<button type="button" class="say" data-act="say" data-text="' + esc(text) + '" aria-label="Play ' + esc(text) + '">🔊 Play</button>';
+    if (sentence) h += '<button type="button" class="say" data-act="say" data-text="' + esc(sentence) + '" aria-label="Play the example sentence">▶ Example</button>';
+    return h + "</div>";
+  }
+  function audioSettingsHtml() {
+    var a = audioPrefs();
+    var h = '<section class="card audio-card"><h2>Audio</h2>';
+    h += '<p class="muted">Plays the reading after you answer or flip a card (Japanese voice of this device).</p>';
+    h += '<div class="row">';
+    h += '<button type="button" data-act="audio-auto" aria-pressed="' + (a.auto ? "true" : "false") + '">Auto-play audio: ' + (a.auto ? "on" : "off") + "</button>";
+    h += '<button type="button" data-act="audio-rate" aria-pressed="' + (a.rate === "slow" ? "true" : "false") + '">Speed: ' + (a.rate === "slow" ? "slow" : "normal") + "</button>";
+    h += '<button type="button" data-act="say" data-text="にほんごのべんきょう">Test</button>';
+    h += "</div></section>";
+    return h;
   }
 
   /* ===================== Drill: JLPT N2 language-knowledge sections =====================
@@ -1683,8 +1931,27 @@ if (typeof document !== "undefined") {
       html += '<p class="meaning">' + esc(it.english) + "</p>";
     }
     if (it.example) html += '<p lang="ja">' + esc(it.example) + "</p>";
+    html += sayButtonsHtml(drillSpeechText(q), drillSentenceText(q));
     html += "</div>";
     return html;
+  }
+  /* What Drill feedback says: the word's reading or the grammar pattern's reading. */
+  function drillSpeechText(q) {
+    var it = q.item || {};
+    if (it.bi === "gram" || it.bi === "comp") return speechReadingOfPattern(it.point);
+    if (q.srcType === "gram") return speechReadingOfPattern(it);
+    return speechReadingOfWord(it);
+  }
+  /* The whole example sentence (blank filled in) for the Example button. */
+  function drillSentenceText(q) {
+    var it = q.item || {};
+    if (it.bi === "comp") return (it.pre || "") + (it.parts || []).join("") + (it.post || "");
+    if (it.bi === "gram") return String(it.sentence).replace("＿＿", it.answer);
+    if (it.bi === "form") return String(it.sentence).replace("＿＿", it.answer);
+    if (it.bi === "ctx") return String(it.sentence).replace("＿＿", it.kanji);
+    if (it.bi === "para") return String(it.sentence).replace(/[{}]/g, "");
+    if (it.bi) return it.sentence || "";
+    return it.example || "";
   }
   function builtinCardHtml(q) {
     var it = q.item, html = '<div class="card dr-card">';
@@ -1705,6 +1972,7 @@ if (typeof document !== "undefined") {
       else if (it.bi === "form") html += '<p lang="ja">' + biBlank(it.sentence, it.answer).replace('class="dr-blank"', 'class="dr-fill"') + "</p>";
       else html += '<p lang="ja">' + esc(it.sentence) + "</p>";
     }
+    html += sayButtonsHtml(drillSpeechText(q), drillSentenceText(q));
     html += "</div>";
     return html;
   }
@@ -1904,6 +2172,7 @@ if (typeof document !== "undefined") {
       html += '<button type="button" class="primary" data-act="start">Start today\'s session</button>';
     }
     html += "<p class=\"muted\">Exam date: 6 December 2026. Pass mark: 90/180, at least 19 in each section. This app does not calculate scaled scores.</p>";
+    html += audioSettingsHtml();
     html += syncCardHtml();
     html += backupControlsHtml();
     main.innerHTML = html;
@@ -1911,7 +2180,7 @@ if (typeof document !== "undefined") {
   }
 
   function renderEnd() {
-    main.innerHTML = "<p>Today's unit is complete.</p>" + studyBoxHtml(todayStudySummary()) + backupControlsHtml();
+    main.innerHTML = "<p>Today's unit is complete.</p>" + studyBoxHtml(todayStudySummary()) + audioSettingsHtml() + backupControlsHtml();
   }
 
   function renderStats() {
@@ -1953,6 +2222,7 @@ if (typeof document !== "undefined") {
     if (!listed) html += '<div class="empty"><p>No study logged yet. Time counts while this page is open and visible.</p></div>';
     html += "</div>";
     html += backupControlsHtml();
+    html += audioSettingsHtml();
     main.innerHTML = html;
   }
 
@@ -1981,6 +2251,7 @@ if (typeof document !== "undefined") {
       html += '<p class="meaning" lang="ja">' + esc(w.reading) + "</p>";
       html += '<p class="meaning">' + esc(w.english) + "</p>";
       if (w.example) html += '<p lang="ja">' + esc(w.example) + "</p>";
+      html += sayButtonsHtml(speechReadingOfWord(w), w.example);
       html += "</div>";
       html += '<button type="button" class="primary" data-act="mark" data-ok="1">Read correctly</button>';
       html += '<button type="button" class="could" data-act="mark" data-ok="0">Could not read.</button>';
@@ -2044,6 +2315,7 @@ if (typeof document !== "undefined") {
     });
     ui._comboLabel = pack.band.label + " · " + pack.chunk.label;
     ui.chFlash = {
+      comboRef: bandId + ":" + chunkIndex,
       fromCombo: true,
       chapterId: "combo-virt",
       ids: ui._comboPool.map(function (w) { return w.id; }),
@@ -2063,6 +2335,7 @@ if (typeof document !== "undefined") {
     ui._comboLabel = pack.band.label + " · " + pack.chunk.label;
     mode = mode === "type" ? "type" : mode === "dark" ? "dark" : "choice";
     ui.chQuiz = {
+      comboRef: bandId + ":" + chunkIndex,
       fromCombo: true,
       chapterId: "combo-virt",
       ids: shuffleIds(ui._comboPool.map(function (w) { return w.id; })),
@@ -2100,10 +2373,11 @@ if (typeof document !== "undefined") {
       levels.forEach(function (lv) {
         var chunks = comboChunks(lv);
         html += '<button type="button" class="secondary" data-act="combo-level" data-id="' + esc(lv.id) + '">';
-        html += '<span class="action-title">' + esc(lv.label) + "</span>";
+        html += '<span class="action-title">' + esc(lv.label) + completionBadge(completionsFor("combo", lv.id + ":", true)) + "</span>";
         html += '<span class="action-desc">' + lv.count + " words · " + chunks.length + " level" + (chunks.length === 1 ? "" : "s") + "</span></button>";
       });
       html += "</div>";
+      html += completionHistoryHtml("combo");
       html += '<p class="muted">Common vs less common is the top vs bottom half of each JLPT level by OpenSubtitles word frequency (FrequencyWords 2016 ja_50k). Words not in that list sort as less common. Each band is then split into levels of about 30 words, still in that frequency order.</p>';
       main.innerHTML = html;
       return;
@@ -2124,7 +2398,7 @@ if (typeof document !== "undefined") {
       html += '<div class="actions">';
       chunks.forEach(function (ch) {
         html += '<button type="button" class="secondary" data-act="combo-chunk" data-index="' + ch.index + '">';
-        html += '<span class="action-title">' + esc(ch.label) + "</span>";
+        html += '<span class="action-title">' + esc(ch.label) + completionBadge(completionsFor("combo", lv.id + ":" + ch.index)) + "</span>";
         html += '<span class="action-desc">' + ch.count + " words</span></button>";
       });
       html += "</div>";
@@ -2134,13 +2408,13 @@ if (typeof document !== "undefined") {
     var pack = comboChunkBy(ui.comboLevel, ui.comboChunk);
     if (!pack) { ui.comboChunk = null; renderCombos(); return; }
     html += '<p><button type="button" class="secondary" data-act="combo-back">Back to ' + esc(lv.label) + "</button></p>";
-    html += "<h1>" + esc(lv.label) + " · " + esc(pack.chunk.label) + "</h1>";
+    html += "<h1>" + esc(lv.label) + " · " + esc(pack.chunk.label) + "</h1>" + completionLine(completionsFor("combo", ui.comboLevel + ":" + ui.comboChunk));
     html += "<p>" + pack.chunk.count + " words · level " + (pack.chunk.index + 1) + " of " + pack.chunkCount + "</p>";
     html += '<p class="mode-label">Practice</p>';
     html += '<div class="actions">';
     html += '<button type="button" class="primary" data-act="combo-flash"><span class="action-title">Flashcards</span><span class="action-desc">Kanji on the front. Flip for reading and meaning.</span></button>';
     html += '<button type="button" class="secondary" data-act="combo-quiz" data-mode="choice"><span class="action-title">Quiz · choose</span><span class="action-desc">See reading or meaning. Pick the kanji.</span></button>';
-    html += '<button type="button" class="secondary" data-act="combo-quiz" data-mode="type"><span class="action-title">Quiz · type</span><span class="action-desc">See reading or meaning. Type the kanji.</span></button>';
+    html += '<button type="button" class="secondary" data-act="combo-quiz" data-mode="type"><span class="action-title">Quiz · type</span><span class="action-desc">See the word. Type its reading in kana.</span></button>';
     html += '<button type="button" class="secondary" data-act="combo-quiz" data-mode="dark"><span class="action-title">Darker day</span><span class="action-desc">Reading and meaning only. No kanji on the prompt.</span></button>';
     html += "</div>";
     main.innerHTML = html;
@@ -2160,7 +2434,7 @@ if (typeof document !== "undefined") {
       var ch = chapterBy(ui.chapterId);
       if (!ch) { ui.chapterId = null; renderChapters(); return; }
       var html = '<p><button type="button" class="secondary" data-act="ch-back">All chapters</button></p>';
-      html += "<h1>" + esc(ch.name) + "</h1>";
+      html += "<h1>" + esc(ch.name) + "</h1>" + completionLine(completionsFor("ch", ch.id));
       html += "<p>" + (ch.words || []).length + " words</p>";
       html += '<div class="edit-block">';
       html += '<p class="mode-label">Rename chapter</p>';
@@ -2179,7 +2453,7 @@ if (typeof document !== "undefined") {
         html += '<div class="actions">';
         html += '<button type="button" class="primary" data-act="ch-flash" data-id="' + esc(ch.id) + '"><span class="action-title">Flashcards</span><span class="action-desc">Kanji on the front. Flip for reading and meaning.</span></button>';
         html += '<button type="button" class="secondary" data-act="ch-quiz" data-id="' + esc(ch.id) + '" data-mode="choice"><span class="action-title">Quiz · choose</span><span class="action-desc">See reading or meaning. Pick the kanji.</span></button>';
-        html += '<button type="button" class="secondary" data-act="ch-quiz" data-id="' + esc(ch.id) + '" data-mode="type"><span class="action-title">Quiz · type</span><span class="action-desc">See reading or meaning. Type the kanji.</span></button>';
+        html += '<button type="button" class="secondary" data-act="ch-quiz" data-id="' + esc(ch.id) + '" data-mode="type"><span class="action-title">Quiz · type</span><span class="action-desc">See the word. Type its reading in kana.</span></button>';
         html += '<button type="button" class="secondary" data-act="ch-quiz" data-id="' + esc(ch.id) + '" data-mode="dark"><span class="action-title">Darker day</span><span class="action-desc">Reading and meaning only. No kanji on the prompt.</span></button>';
         html += "</div>";
       }
@@ -2216,11 +2490,12 @@ if (typeof document !== "undefined") {
       list += '<div class="chapter-list">';
       chapters.forEach(function (c) {
         list += '<button type="button" class="item" data-act="ch-open" data-id="' + esc(c.id) + '">';
-        list += '<div class="w">' + esc(c.name) + "</div>";
+        list += '<div class="w">' + esc(c.name) + completionBadge(completionsFor("ch", c.id)) + "</div>";
         list += '<div class="m">' + (c.words || []).length + " words</div></button>";
       });
       list += "</div>";
     }
+    list += completionHistoryHtml("ch");
     list += "<h2>New chapter</h2>";
     list += '<form data-act="ch-create">';
     list += '<label for="ch-name">Name</label>';
@@ -2259,6 +2534,7 @@ if (typeof document !== "undefined") {
       html += '<p class="meaning" lang="ja">' + esc(w.reading) + "</p>";
       html += '<p class="meaning">' + esc(w.english) + "</p>";
       if (w.example) html += '<p lang="ja">' + esc(w.example) + "</p>";
+      html += sayButtonsHtml(speechReadingOfWord(w), w.example);
       html += "</div>";
     }
     html += '<button type="button" class="primary" data-act="ch-next">Next</button>';
@@ -2319,22 +2595,30 @@ if (typeof document !== "undefined") {
       html += '<p class="quiz-prompt" lang="' + (promptSide === "reading" ? "ja" : "en") + '">' + esc(promptSide === "reading" ? w.reading : w.english) + "</p>";
       html += "<p>" + (promptSide === "reading" ? "Choose the meaning." : "Choose the reading.") + "</p>";
     } else {
-      html += '<p class="quiz-prompt" lang="' + (promptSide === "reading" ? "ja" : "en") + '">' + esc(promptSide === "reading" ? w.reading : w.english) + "</p>";
-      html += "<p>" + (st.mode === "type" ? "Type the kanji." : "Choose the kanji.") + "</p>";
+      if (st.mode === "type") {
+        var hasK = dHasKanji(w.kanji) || !w.english;
+        html += '<p class="quiz-prompt" lang="' + (hasK ? "ja" : "en") + '">' + esc(hasK ? w.kanji : (w.english || w.kanji)) + "</p>";
+        html += "<p>" + (hasK ? "Type the reading in kana." : "Type the word in kana.") + "</p>";
+      } else {
+        html += '<p class="quiz-prompt" lang="' + (promptSide === "reading" ? "ja" : "en") + '">' + esc(promptSide === "reading" ? w.reading : w.english) + "</p>";
+        html += "<p>Choose the kanji.</p>";
+      }
     }
     if (st.feedback) {
       html += '<p class="' + (st.feedback.ok ? "muted" : "warn") + '">' + (st.feedback.ok ? "Correct." : "Not this one.") + "</p>";
+      if (st.feedback.typed != null) html += '<p class="muted">You typed: <span lang="ja">' + esc(st.feedback.typed) + "</span></p>";
       html += '<div class="card">';
       html += '<p class="meaning" lang="ja">' + esc(w.kanji) + "</p>";
       html += '<p class="meaning" lang="ja">' + esc(w.reading) + "</p>";
       html += '<p class="meaning">' + esc(w.english || "") + "</p>";
       if (w.example) html += '<p lang="ja">' + esc(w.example) + "</p>";
+      html += sayButtonsHtml(speechReadingOfWord(w), w.example);
       html += "</div>";
       html += '<button type="button" class="primary" data-act="ch-quiz-next">Next</button>';
     } else if (st.mode === "type") {
       html += '<form data-act="ch-type">';
-      html += '<label for="quiz-type">Kanji</label>';
-      html += '<input id="quiz-type" name="answer" type="text" autocomplete="off" lang="ja" autofocus>';
+      html += '<label for="quiz-type">Type the reading (kana)</label>';
+      html += '<input id="quiz-type" name="answer"' + TYPE_IN_ATTRS + ' placeholder="ひらがな" autofocus>';
       html += '<p><button type="submit" class="primary">Check</button></p>';
       html += "</form>";
     } else {
@@ -2420,6 +2704,7 @@ if (typeof document !== "undefined") {
       html += '<p class="meaning" lang="ja">' + esc(w.reading) + "</p>";
       html += '<p class="meaning">' + esc(w.english) + "</p>";
       if (w.example) html += '<p lang="ja">' + esc(w.example) + "</p>";
+      html += sayButtonsHtml(speechReadingOfWord(w), w.example);
       html += "</div>";
       html += '<button type="button" class="primary" data-act="wrong-mark" data-ok="1">Read correctly</button>';
       html += '<button type="button" class="could" data-act="wrong-mark" data-ok="0">Could not read.</button>';
@@ -2532,7 +2817,7 @@ if (typeof document !== "undefined") {
       var ch = gChapterBy(ui.gChapterId);
       if (!ch) { ui.gChapterId = null; renderGrammar(); return; }
       var html = '<p><button type="button" class="secondary" data-act="g-back">All grammar</button></p>';
-      html += "<h1>" + esc(ch.name) + "</h1>";
+      html += "<h1>" + esc(ch.name) + "</h1>" + completionLine(completionsFor("g", ch.id));
       html += "<p>" + (ch.points || []).length + " points</p>";
       html += '<div class="edit-block">';
       html += '<p class="mode-label">Rename chapter</p>';
@@ -2551,7 +2836,7 @@ if (typeof document !== "undefined") {
         html += '<div class="actions">';
         html += '<button type="button" class="primary" data-act="g-flash" data-id="' + esc(ch.id) + '"><span class="action-title">Flashcards</span><span class="action-desc">Pattern on the front. Flip for meaning, usage, and example.</span></button>';
         html += '<button type="button" class="secondary" data-act="g-quiz" data-id="' + esc(ch.id) + '" data-mode="choice"><span class="action-title">Quiz · choose</span><span class="action-desc">See the meaning. Pick the pattern.</span></button>';
-        html += '<button type="button" class="secondary" data-act="g-quiz" data-id="' + esc(ch.id) + '" data-mode="type"><span class="action-title">Quiz · type</span><span class="action-desc">See the meaning. Type the pattern.</span></button>';
+        html += '<button type="button" class="secondary" data-act="g-quiz" data-id="' + esc(ch.id) + '" data-mode="type"><span class="action-title">Quiz · type</span><span class="action-desc">See the meaning. Type the pattern’s reading in kana.</span></button>';
         html += "</div>";
       }
       html += "<h2>Paste grammar</h2>";
@@ -2603,11 +2888,12 @@ if (typeof document !== "undefined") {
       list += '<div class="chapter-list">';
       chapters.forEach(function (c) {
         list += '<button type="button" class="item" data-act="g-open" data-id="' + esc(c.id) + '">';
-        list += '<div class="w">' + esc(c.name) + "</div>";
+        list += '<div class="w">' + esc(c.name) + completionBadge(completionsFor("g", c.id)) + "</div>";
         list += '<div class="m">' + (c.points || []).length + " points</div></button>";
       });
       list += "</div>";
     }
+    list += completionHistoryHtml("g");
     list += "<h2>New grammar chapter</h2>";
     list += '<form data-act="g-create">';
     list += '<label for="g-name">Name</label>';
@@ -2645,6 +2931,7 @@ if (typeof document !== "undefined") {
       html += '<p class="meaning">' + esc(p.meaning) + "</p>";
       html += '<p class="muted">' + esc(p.usage) + "</p>";
       if (p.example) html += '<p lang="ja">' + esc(p.example) + "</p>";
+      html += sayButtonsHtml(speechReadingOfPattern(p), p.example);
       html += "</div>";
     }
     html += '<button type="button" class="primary" data-act="g-next">Next</button>';
@@ -2681,17 +2968,19 @@ if (typeof document !== "undefined") {
     if (p.usage) html += '<p class="muted">' + esc(p.usage) + "</p>";
     if (st.feedback) {
       html += '<p class="' + (st.feedback.ok ? "muted" : "warn") + '">' + (st.feedback.ok ? "Correct." : "Not this one.") + "</p>";
+      if (st.feedback.typed != null) html += '<p class="muted">You typed: <span lang="ja">' + esc(st.feedback.typed) + "</span></p>";
       html += '<div class="card"><div class="jp kanji" lang="ja">' + gPatternHtml(p) + "</div>";
       html += gReadingLine(p);
       html += '<p class="meaning">' + esc(p.meaning) + "</p>";
       if (p.usage) html += '<p class="muted">' + esc(p.usage) + "</p>";
       if (p.example) html += '<p lang="ja">' + esc(p.example) + "</p>";
+      html += sayButtonsHtml(speechReadingOfPattern(p), p.example);
       html += "</div>";
       html += '<button type="button" class="primary" data-act="g-quiz-next">Next</button>';
     } else if (st.mode === "type") {
       html += '<form data-act="g-type">';
-      html += '<label for="g-type-in">Type the pattern' + (p.reading ? " (kanji or reading)" : "") + "</label>";
-      html += '<input id="g-type-in" name="answer" type="text" autocomplete="off" lang="ja" required>';
+      html += '<label for="g-type-in">Type the reading (kana)</label>';
+      html += '<input id="g-type-in" name="answer"' + TYPE_IN_ATTRS + ' placeholder="ひらがな" required>';
       html += '<p><button type="submit" class="primary">Check</button></p>';
       html += "</form>";
     } else {
@@ -2873,6 +3162,7 @@ if (typeof document !== "undefined") {
       chapters: progress.chapters || [],
       grammarChapters: progress.grammarChapters || [],
       drillLog: progress.drillLog || [],
+      completions: progress.completions || [],
       stats: progress.stats || { days: {} }
     }, null, 2)], { type: "application/json" });
     var a = document.createElement("a");
@@ -2902,6 +3192,7 @@ if (typeof document !== "undefined") {
       session.revealed = true;
       saveSession();
       renderSession();
+      autoSpeak(speechReadingOfWord(wordBy(session.ids[session.index])));
       return;
     }
     if (act === "mark") {
@@ -2952,6 +3243,21 @@ if (typeof document !== "undefined") {
       } else render();
       return;
     }
+    if (act === "say") {
+      speakJa(b.getAttribute("data-text"));
+      return;
+    }
+    if (act === "audio-auto") {
+      setAudioPrefs({ auto: !audioPrefs().auto });
+      render();
+      return;
+    }
+    if (act === "audio-rate") {
+      setAudioPrefs({ rate: audioPrefs().rate === "slow" ? "normal" : "slow" });
+      render();
+      speakJa(audioPrefs().rate === "slow" ? "ゆっくり" : "ふつう");
+      return;
+    }
     if (act === "dr-start") {
       if (!startDrill(b.getAttribute("data-scope"))) { window.alert("No questions available here yet."); return; }
       render();
@@ -2988,6 +3294,7 @@ if (typeof document !== "undefined") {
         dst.answered = { chosen: di, ok: di === dq.answer };
         if (!dst.answered.ok) { drillRecord(dq, false, "wrong"); dst.results.push("wrong"); }
         render();
+        autoSpeak(drillSpeechText(dq));
         return;
       }
       if (act === "dr-chunk") {
@@ -3010,6 +3317,7 @@ if (typeof document !== "undefined") {
         dst.answered = { ok: cok };
         if (!cok) { drillRecord(dq, false, "wrong"); dst.results.push("wrong"); }
         render();
+        autoSpeak(drillSpeechText(dq));
         return;
       }
       if (act === "dr-mark") {
@@ -3259,12 +3567,19 @@ if (typeof document !== "undefined") {
       if (!ui.chFlash) return;
       ui.chFlash.revealed = true;
       render();
+      var fId = ui.chFlash.ids[ui.chFlash.index];
+      autoSpeak(speechReadingOfWord(ui.chFlash.fromWrong ? wordBy(fId) : chapterWordBy(ui.chFlash.chapterId, fId)));
       return;
     }
     if (act === "ch-next") {
       if (!ui.chFlash) return;
       ui.chFlash.index += 1;
       ui.chFlash.revealed = false;
+      if (ui.chFlash.index === ui.chFlash.ids.length) {
+        var cf = ui.chFlash;
+        if (cf.fromCombo) recordCompletion("combo", cf.comboRef, ui._comboLabel, "flash", null, cf.ids.length);
+        else if (!cf.fromWrong) recordCompletion("ch", cf.chapterId, (chapterBy(cf.chapterId) || {}).name, "flash", null, cf.ids.length);
+      }
       render();
       return;
     }
@@ -3309,7 +3624,12 @@ if (typeof document !== "undefined") {
       ui.chQuiz.feedback = null;
       ui.chQuiz.choices = null;
       ui.chQuiz.promptSide = ui.chQuiz.mode === "dark" ? darkPromptSide() : (Math.random() < 0.5 ? "english" : "reading");
-      if (ui.chQuiz.index >= ui.chQuiz.ids.length) bumpStat("quizzes", 1);
+      if (ui.chQuiz.index >= ui.chQuiz.ids.length) {
+        bumpStat("quizzes", 1);
+        var cq = ui.chQuiz;
+        if (cq.fromCombo) recordCompletion("combo", cq.comboRef, ui._comboLabel, cq.mode, cq.correct, cq.ids.length);
+        else if (!cq.fromWrong) recordCompletion("ch", cq.chapterId, (chapterBy(cq.chapterId) || {}).name, cq.mode, cq.correct, cq.ids.length);
+      }
       render();
       return;
     }
@@ -3425,12 +3745,14 @@ if (typeof document !== "undefined") {
       if (!ui.gFlash) return;
       ui.gFlash.revealed = true;
       render();
+      autoSpeak(speechReadingOfPattern(gPointBy(ui.gFlash.chapterId, ui.gFlash.ids[ui.gFlash.index])));
       return;
     }
     if (act === "g-next") {
       if (!ui.gFlash) return;
       ui.gFlash.index += 1;
       ui.gFlash.revealed = false;
+      if (ui.gFlash.index === ui.gFlash.ids.length) recordCompletion("g", ui.gFlash.chapterId, (gChapterBy(ui.gFlash.chapterId) || {}).name, "flash", null, ui.gFlash.ids.length);
       render();
       return;
     }
@@ -3469,6 +3791,7 @@ if (typeof document !== "undefined") {
       bumpStat("wordsGraded", 1);
       ui.gQuiz.feedback = { ok: gOk };
       render();
+      autoSpeak(speechReadingOfPattern(curG));
       return;
     }
     if (act === "g-quiz-next") {
@@ -3476,7 +3799,10 @@ if (typeof document !== "undefined") {
       ui.gQuiz.index += 1;
       ui.gQuiz.feedback = null;
       ui.gQuiz.choices = null;
-      if (ui.gQuiz.index >= ui.gQuiz.ids.length) bumpStat("quizzes", 1);
+      if (ui.gQuiz.index >= ui.gQuiz.ids.length) {
+        bumpStat("quizzes", 1);
+        recordCompletion("g", ui.gQuiz.chapterId, (gChapterBy(ui.gQuiz.chapterId) || {}).name, ui.gQuiz.mode, ui.gQuiz.correct, ui.gQuiz.ids.length);
+      }
       render();
       return;
     }
@@ -3587,7 +3913,10 @@ if (typeof document !== "undefined") {
       if (!ui.chQuiz || ui.chQuiz.feedback) return;
       var cur = chapterWordBy(ui.chQuiz.chapterId, ui.chQuiz.ids[ui.chQuiz.index]);
       var ans = (typeForm.answer.value || "").trim();
-      finishQuizItem(ans === cur.kanji, cur);
+      if (!ans) return;
+      ui.chQuiz.typed = ans;
+      finishQuizItem(wordTypedOk(ans, cur), cur);
+      if (ui.chQuiz && ui.chQuiz.feedback) { ui.chQuiz.feedback.typed = ans; render(); }
       return;
     }
     var gRename = e.target.closest("form[data-act='g-rename']");
@@ -3644,11 +3973,12 @@ if (typeof document !== "undefined") {
       var gCur = gPointBy(ui.gQuiz.chapterId, ui.gQuiz.ids[ui.gQuiz.index]);
       if (!gCur) return;
       var gAns = (gType.answer.value || "").trim();
-      var gOkType = normGrammarAnswer(gAns) === normGrammarAnswer(gCur.pattern) || (!!gCur.reading && normGrammarAnswer(gAns) === normGrammarAnswer(gCur.reading));
+      var gOkType = grammarTypedOk(gAns, gCur);
       if (gOkType) ui.gQuiz.correct += 1;
       bumpStat("wordsGraded", 1);
-      ui.gQuiz.feedback = { ok: gOkType };
+      ui.gQuiz.feedback = { ok: gOkType, typed: gAns };
       render();
+      autoSpeak(speechReadingOfPattern(gCur));
       return;
     }
     var form = e.target.closest("form[data-act='save-word']");
@@ -3708,6 +4038,7 @@ if (typeof document !== "undefined") {
           chapters: Array.isArray(data.chapters) ? data.chapters : [],
           grammarChapters: Array.isArray(data.grammarChapters) ? data.grammarChapters : [],
           drillLog: Array.isArray(data.drillLog) ? data.drillLog : [],
+          completions: Array.isArray(data.completions) ? data.completions : [],
           stats: (data.stats && typeof data.stats === "object") ? data.stats : { days: {} }
         });
         writeLocal(progress);

@@ -100,3 +100,13 @@ Grammar, Reading, Listening, and Test stay hidden until 6 December 2026.
 - `data/drills.js`
 
 `README.md` and `SOURCES.md` are not required to run the app.
+
+## Typed answers and audio
+
+**Quiz · type** (Chapters, Combos) shows the word and asks for its **reading in kana**; Gram's typing quiz shows the meaning and asks for the pattern's reading. Hiragana, katakana, half-width kana and romaji are accepted; spaces, 〜 and trailing punctuation are ignored; ー counts as the vowel it lengthens (けーたい = けいたい). Typing the exact written form (if the keyboard converted it) also counts. Words without kanji are asked by meaning.
+
+After an answer, a flashcard flip or Drill feedback, the app speaks the reading (grammar: the pattern's reading) with the device's Japanese voice (Web Speech API, ja-JP). Every feedback card has **🔊 Play** and, when there is a sentence, **▶ Example**. The **Audio** card (Today, Stats) has Auto-play on/off and Speed normal/slow, saved on the device only. If the device has no Japanese voice, a one-time note explains how to install one.
+
+## Completion counts and History
+
+Every chapter (Chapters), grammar chapter (Gram) and Combos level shows a **×N** badge: how many runs were finished to the last card or question, any mode (hover/long-press for the per-mode split; the chapter/level page shows it too). Each list page ends with **History**: finished runs newest first with Bucharest date + time, name, mode and score. Runs are stored as events in `completions` (with ids) and merge across devices through the gist as a union. Wrong-words runs and stopped runs are not counted.

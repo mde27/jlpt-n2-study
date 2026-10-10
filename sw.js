@@ -1,5 +1,5 @@
 "use strict";
-var CACHE = "jlpt-n2-v21";
+var CACHE = "jlpt-n2-v22";
 var FILES = [
   "./",
   "./index.html",
