@@ -1744,7 +1744,7 @@ if (typeof document !== "undefined") {
       });
       var gd = takeDistinct(it.core, [{ list: Object.keys(cores) }], 3);
       if (!gd) return null;
-      return mcq(section, key, "gram", it, gb.html, "Which grammar fits the blank?", it.core, gd);
+      return mcq(section, key, "gram", it, gMaskLeak(gb.html, it), "Which grammar fits the blank?", it.core, gd);
     }
     if (section === "comp") {
       if (!it.example) return null;
@@ -2805,6 +2805,24 @@ if (typeof document !== "undefined") {
     if (furigana && p.reading) return "<ruby>" + esc(p.pattern) + "<rt>" + esc(p.reading) + "</rt></ruby>";
     return esc(p.pattern);
   }
+  /* Prompt text (meaning/usage/example) must not give away the pattern or its reading: blank every form as ___. */
+  function gLeakForms(p) {
+    var forms = {};
+    [p.pattern, p.reading, p.core].forEach(function (x) {
+      String(x || "").split(/[\/／・、,（）()]/).forEach(function (f) {
+        f = f.replace(/[〜～~\s]/g, "").replace(/^(?:[A-Za-zＡ-Ｚａ-ｚ]+[+＋\-－]?(?:る|た|て|ない|ます)?[+＋]?)/, "").trim();
+        if (f.length >= 2 || (f.length === 1 && /[\u4e00-\u9fff]/.test(f))) forms[f] = 1;
+        if (f && typeof kanaBase === "function") { var k = toHiraganaLoose(f); if (k.length >= 2) forms[k] = 1; var kk = k.replace(/[\u3041-\u3096]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) + 0x60); }); if (kk.length >= 2) forms[kk] = 1; }
+      });
+    });
+    return Object.keys(forms).sort(function (a, b) { return b.length - a.length; });
+  }
+  function toHiraganaLoose(t) { return String(t || "").replace(/[\u30a1-\u30f6]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0x60); }); }
+  function gMaskLeak(text, p) {
+    var out = String(text || "");
+    gLeakForms(p).forEach(function (f) { out = out.split(f).join("\u0001"); });
+    return out.replace(/\u0001+/g, "___");
+  }
   function gReadingLine(p) {
     return p.reading ? '<p class="g-reading" lang="ja">' + esc(p.reading) + "</p>" : "";
   }
@@ -2964,8 +2982,10 @@ if (typeof document !== "undefined") {
       return;
     }
     var html = '<p class="muted">' + esc(ch.name) + " · quiz · " + (st.index + 1) + " of " + st.ids.length + "</p>";
-    html += '<p class="quiz-prompt">' + esc(p.meaning) + "</p>";
-    if (p.usage) html += '<p class="muted">' + esc(p.usage) + "</p>";
+    if (!st.feedback) {
+      html += '<p class="quiz-prompt">' + esc(gMaskLeak(p.meaning, p)) + "</p>";
+      if (p.usage) html += '<p class="muted">' + esc(gMaskLeak(p.usage, p)) + "</p>";
+    } else html += '<p class="quiz-prompt">' + esc(p.meaning) + "</p>";
     if (st.feedback) {
       html += '<p class="' + (st.feedback.ok ? "muted" : "warn") + '">' + (st.feedback.ok ? "Correct." : "Not this one.") + "</p>";
       if (st.feedback.typed != null) html += '<p class="muted">You typed: <span lang="ja">' + esc(st.feedback.typed) + "</span></p>";
