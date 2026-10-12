@@ -1081,11 +1081,13 @@ if (typeof document !== "undefined") {
 
   /* ===================== Completions: finished runs per chapter / grammar chapter / Combos level =====================
      One event per run that reached the end (any mode). Events have ids, so sync is a plain union. */
-  var COMPLETION_MODES = { flash: "Flashcards", choice: "Quiz · choose", type: "Quiz · type", dark: "Darker day" };
-  function recordCompletion(kind, ref, name, mode, score, total) {
+  var COMPLETION_MODES = { flash: "Flashcards", choice: "Quiz · choose", type: "Quiz · type", dark: "Darker day", match: "Match" };
+  function recordCompletion(kind, ref, name, mode, score, total, extra) {
     if (!kind || !ref) return;
     if (!Array.isArray(progress.completions)) progress.completions = [];
-    progress.completions.push({ id: newId("cp"), kind: kind, ref: String(ref), name: String(name || ""), mode: mode, score: score == null ? null : score, total: total, at: new Date().toISOString(), day: todayISO() });
+    var ev = { id: newId("cp"), kind: kind, ref: String(ref), name: String(name || ""), mode: mode, score: score == null ? null : score, total: total, at: new Date().toISOString(), day: todayISO() };
+    if (extra) Object.keys(extra).forEach(function (k) { ev[k] = extra[k]; });
+    progress.completions.push(ev);
     saveProgress();
   }
   function completionsFor(kind, refOrPrefix, prefix) {
@@ -1101,7 +1103,8 @@ if (typeof document !== "undefined") {
   }
   function completionBadge(list) {
     if (!list.length) return "";
-    return ' <span class="cp-badge" title="' + esc("Completed " + list.length + "×: " + completionBreakdown(list)) + '">×' + list.length + "</span>";
+    var best = bestMatchMs(list);
+    return (best != null ? ' <span class="m-best" title="Best Match time">⏱ ' + fmtMs(best) + "</span>" : "") + ' <span class="cp-badge" title="' + esc("Completed " + list.length + "×: " + completionBreakdown(list)) + '">×' + list.length + "</span>";
   }
   function completionLine(list) {
     if (!list.length) return '<p class="muted cp-line">Not completed yet.</p>';
@@ -1120,10 +1123,146 @@ if (typeof document !== "undefined") {
     h += '<p class="muted">' + list.length + " finished run" + (list.length === 1 ? "" : "s") + " · " + esc(completionBreakdown(list)) + "</p><ul class=\"cp-list\">";
     list.slice(0, 200).forEach(function (e) {
       h += "<li><span class=\"cp-when\">" + esc(fmtWhen(e.at).replace(" Bucharest", "")) + "</span> · <b>" + esc(completionName(e)) + "</b> · " + esc(COMPLETION_MODES[e.mode] || e.mode) +
+        (e.mode === "match" && e.ms != null ? " · " + fmtMs(e.ms) + " · " + (e.misses || 0) + " miss" + (e.misses === 1 ? "" : "es") : "") +
         (e.score != null ? " · " + e.score + "/" + e.total : " · " + e.total + (e.total === 1 ? " card" : " cards")) + "</li>";
     });
     if (list.length > 200) h += "<li class=\"muted\">… " + (list.length - 200) + " older</li>";
     return h + "</ul><p class=\"muted\">Times are Bucharest time.</p></section>";
+  }
+
+
+  /* ===================== Match: tap a word, then its meaning (6 pairs a round) ===================== */
+  var MATCH_N = 6;
+  function fmtMs(ms) { var t = Math.round((ms || 0) / 1000); return Math.floor(t / 60) + ":" + ("0" + (t % 60)).slice(-2); }
+  function bestMatchMs(list) {
+    var b = null;
+    list.forEach(function (e) { if (e && e.mode === "match" && e.ms != null && (b == null || e.ms < b)) b = e.ms; });
+    return b;
+  }
+  function matchPool(kind, id) {
+    var words = [], name = "", ref = id;
+    if (kind === "ch") { var c = chapterBy(id); if (!c) return null; words = c.words || []; name = c.name; }
+    else if (kind === "combo") {
+      var parts = String(id).split(":"), pk = comboChunkBy(parts[0], +parts[1]); if (!pk) return null;
+      words = pk.chunk.words.map(function (w) { return { id: w.id, kanji: w.kanji, reading: w.reading, english: w.english, example: "" }; });
+      name = pk.band.label + " · " + pk.chunk.label;
+    } else if (kind === "wrong") {
+      words = wrongWordSummaries().filter(function (r) { return r.open; }).map(function (r) { return ensureWordFromSummary(r); });
+      name = "Wrong words"; ref = "open";
+    } else if (kind === "add") { words = (progress.words || []).filter(function (w) { return !w.deleted; }); name = "My words"; ref = "all"; }
+    var seen = {};
+    words = words.filter(function (w) {
+      var k = (w.kanji || w.reading) + "|" + w.english;
+      if (!w || !w.english || !(w.kanji || w.reading) || seen[k]) return false;
+      seen[k] = 1; return true;
+    });
+    return { kind: kind, ref: ref, name: name, words: words };
+  }
+  function startMatch(kind, id) {
+    var pool = matchPool(kind, id);
+    if (!pool || pool.words.length < 2) return;
+    var byId = {}; pool.words.forEach(function (w) { byId[w.id] = w; });
+    if (kind === "wrong" || kind === "add") saveProgress(true);
+    ui.match = { kind: kind, ref: pool.ref, name: pool.name, back: location.hash || "#today", byId: byId, order: shuffleIds(pool.words.map(function (w) { return w.id; })),
+      pos: 0, round: null, sel: null, done: {}, missed: {}, misses: 0, start: Date.now(), end: null, busy: false };
+    matchNextRound();
+    render();
+  }
+  function matchNextRound() {
+    var m = ui.match, ids = m.order.slice(m.pos, m.pos + MATCH_N);
+    m.round = { left: ids, right: shuffleIds(ids.slice()) };
+    m.pos += ids.length; m.sel = null;
+  }
+  function matchWordLabel(w) { return w.kanji || w.reading; }
+  function matchSameMeaning(a, b) { var m = ui.match; return a === b || (m.byId[a] && m.byId[b] && m.byId[a].english === m.byId[b].english); }
+  function renderMatch() {
+    var m = ui.match, total = m.order.length, doneN = Object.keys(m.done).length;
+    var html = '<div class="match">';
+    html += '<div class="m-head"><span class="muted">' + esc(m.name) + " · Match</span>";
+    html += '<span class="m-stats"><span id="m-time">' + fmtMs((m.end || Date.now()) - m.start) + '</span> · <span id="m-miss">' + m.misses + '</span> ✗ · ' + doneN + "/" + total + "</span></div>";
+    html += '<div class="m-bar"><span style="width:' + Math.round(100 * doneN / total) + '%"></span></div>';
+    if (m.end) {
+      var list = m.kind === "ch" || m.kind === "combo" ? completionsFor(m.kind, m.ref) : (progress.completions || []).filter(function (e) { return e.kind === m.kind; });
+      var best = bestMatchMs(list), ms = m.end - m.start, isBest = best === ms;
+      html += '<div class="m-done"><div class="m-blossom" aria-hidden="true">🌸</div><h1>All matched!</h1>';
+      html += '<p class="m-score"><b>' + fmtMs(ms) + "</b> · " + m.misses + " mistake" + (m.misses === 1 ? "" : "s") + "</p>";
+      html += '<p class="muted">' + total + " pairs · " + (total - Object.keys(m.missed).length) + " right first time" + (best != null ? " · best " + fmtMs(best) : "") + "</p>";
+      if (isBest) html += '<p class="m-newbest">New best time</p>';
+      html += '<div class="actions"><button type="button" class="primary" data-act="m-again">Play again</button><button type="button" class="secondary" data-act="m-stop">Back</button></div></div></div>';
+      main.innerHTML = html;
+      return;
+    }
+    html += '<div class="m-grid">';
+    var r = m.round;
+    for (var i = 0; i < r.left.length; i++) {
+      var L = r.left[i], R = r.right[i];
+      html += '<button type="button" class="m-tile m-word' + (m.done[L] ? " m-gone" : "") + (m.sel && m.sel.side === "w" && m.sel.id === L ? " m-sel" : "") + '" lang="ja" data-act="m-tap" data-side="w" data-id="' + esc(L) + '"' + (m.done[L] ? " disabled" : "") + ">" + esc(matchWordLabel(m.byId[L])) + "</button>";
+      html += '<button type="button" class="m-tile m-mean' + (m.done[R] ? " m-gone" : "") + (m.sel && m.sel.side === "m" && m.sel.id === R ? " m-sel" : "") + '" data-act="m-tap" data-side="m" data-id="' + esc(R) + '"' + (m.done[R] ? " disabled" : "") + ">" + esc(m.byId[R].english) + "</button>";
+    }
+    html += "</div>";
+    html += '<p class="muted m-hint">Tap a word, then its meaning.</p>';
+    html += '<p><button type="button" class="secondary" data-act="m-stop">Stop</button></p></div>';
+    main.innerHTML = html;
+    if (!ui._mTimer) ui._mTimer = setInterval(function () {
+      var el = document.getElementById("m-time");
+      if (!ui.match || ui.match.end || !el) { clearInterval(ui._mTimer); ui._mTimer = null; return; }
+      el.textContent = fmtMs(Date.now() - ui.match.start);
+    }, 500);
+  }
+  function matchTap(side, id, btn) {
+    var m = ui.match;
+    if (!m || m.end || m.busy || m.done[id] && side === "w") return;
+    if (!m.sel || m.sel.side === side) {
+      m.sel = { side: side, id: id };
+      main.querySelectorAll(".m-tile.m-sel").forEach(function (x) { x.classList.remove("m-sel"); });
+      btn.classList.add("m-sel");
+      return;
+    }
+    var wId = side === "w" ? id : m.sel.id, mId = side === "m" ? id : m.sel.id;
+    var other = main.querySelector('.m-tile[data-side="' + m.sel.side + '"][data-id="' + m.sel.id + '"]');
+    var pair = [btn, other].filter(Boolean);
+    m.sel = null;
+    if (matchSameMeaning(wId, mId)) {
+      var meanEl = main.querySelector('.m-tile[data-side="m"][data-id="' + mId + '"]');
+      m.done[wId] = 1; if (mId !== wId) { m.done[mId] = 1; }
+      pair.forEach(function (x) { x.classList.remove("m-sel"); x.classList.add("m-ok"); x.disabled = true; });
+      autoSpeak(speechReadingOfWord(m.byId[wId]));
+      m.busy = true;
+      setTimeout(function () {
+        if (ui.match !== m) return;
+        m.busy = false;
+        var left = m.round.left.filter(function (x) { return !m.done[x]; });
+        if (!left.length) {
+          if (m.pos >= m.order.length) matchFinish();
+          else matchNextRound();
+        }
+        render();
+      }, 420);
+      void meanEl;
+    } else {
+      m.misses += 1;
+      if (!m.missed[wId]) {
+        m.missed[wId] = 1;
+        var cw = m.byId[wId], daily = ensureDailyFromChapterWord(cw), today = todayISO();
+        gradeWord(daily, false, today);
+        logCouldNotRead(daily, today);
+        bumpStat("wordsGraded", 1);
+        saveProgress(true);
+      }
+      var mm = document.getElementById("m-miss"); if (mm) mm.textContent = m.misses;
+      pair.forEach(function (x) { x.classList.remove("m-sel"); x.classList.remove("m-bad"); void x.offsetWidth; x.classList.add("m-bad"); });
+      setTimeout(function () { pair.forEach(function (x) { x.classList.remove("m-bad"); }); }, 520);
+    }
+  }
+  function matchFinish() {
+    var m = ui.match;
+    m.end = Date.now();
+    var n = m.order.length;
+    bumpStat("quizzes", 1);
+    recordCompletion(m.kind, m.ref, m.name, "match", n - Object.keys(m.missed).length, n, { ms: m.end - m.start, misses: m.misses });
+  }
+  function matchButtonHtml(kind, id, extraDesc) {
+    return '<button type="button" class="secondary m-start" data-act="m-start" data-kind="' + kind + '" data-id="' + esc(id) + '"><span class="action-title">🌸 Match</span><span class="action-desc">Tap a word, then its meaning. 6 pairs a round, timed' + (extraDesc || "") + ".</span></button>";
   }
 
   /* ===================== Typed answers: the reading in kana =====================
@@ -2415,6 +2554,7 @@ if (typeof document !== "undefined") {
     html += '<button type="button" class="primary" data-act="combo-flash"><span class="action-title">Flashcards</span><span class="action-desc">Kanji on the front. Flip for reading and meaning.</span></button>';
     html += '<button type="button" class="secondary" data-act="combo-quiz" data-mode="choice"><span class="action-title">Quiz · choose</span><span class="action-desc">See reading or meaning. Pick the kanji.</span></button>';
     html += '<button type="button" class="secondary" data-act="combo-quiz" data-mode="type"><span class="action-title">Quiz · type</span><span class="action-desc">See the word. Type its reading in kana.</span></button>';
+    html += matchButtonHtml("combo", ui.comboLevel + ":" + ui.comboChunk);
     html += '<button type="button" class="secondary" data-act="combo-quiz" data-mode="dark"><span class="action-title">Darker day</span><span class="action-desc">Reading and meaning only. No kanji on the prompt.</span></button>';
     html += "</div>";
     main.innerHTML = html;
@@ -2454,6 +2594,7 @@ if (typeof document !== "undefined") {
         html += '<button type="button" class="primary" data-act="ch-flash" data-id="' + esc(ch.id) + '"><span class="action-title">Flashcards</span><span class="action-desc">Kanji on the front. Flip for reading and meaning.</span></button>';
         html += '<button type="button" class="secondary" data-act="ch-quiz" data-id="' + esc(ch.id) + '" data-mode="choice"><span class="action-title">Quiz · choose</span><span class="action-desc">See reading or meaning. Pick the kanji.</span></button>';
         html += '<button type="button" class="secondary" data-act="ch-quiz" data-id="' + esc(ch.id) + '" data-mode="type"><span class="action-title">Quiz · type</span><span class="action-desc">See the word. Type its reading in kana.</span></button>';
+        html += matchButtonHtml("ch", ch.id);
         html += '<button type="button" class="secondary" data-act="ch-quiz" data-id="' + esc(ch.id) + '" data-mode="dark"><span class="action-title">Darker day</span><span class="action-desc">Reading and meaning only. No kanji on the prompt.</span></button>';
         html += "</div>";
       }
@@ -2661,6 +2802,7 @@ if (typeof document !== "undefined") {
       html += '<div class="actions">';
       html += '<button type="button" class="primary" data-act="wrong-flash" data-scope="open"><span class="action-title">Flashcards · open</span><span class="action-desc">Re-drill words still open.</span></button>';
       html += '<button type="button" class="secondary" data-act="wrong-quiz" data-scope="open" data-mode="choice"><span class="action-title">Quiz · open</span><span class="action-desc">Choose the kanji for open misses.</span></button>';
+      html += matchButtonHtml("wrong", "open", " · open words");
       html += '<button type="button" class="secondary" data-act="wrong-quiz" data-scope="open" data-mode="dark"><span class="action-title">Darker day · open</span><span class="action-desc">Reading and meaning only.</span></button>';
       html += "</div>";
     }
@@ -2730,6 +2872,11 @@ if (typeof document !== "undefined") {
     html += '<p id="bulk-preview" class="bulk-preview" aria-live="polite">' + esc(bulkPreviewText(ui.bulkDraft || "")) + "</p>";
     html += '<div class="paste-actions"><button type="button" class="primary" data-act="bulk-add">Add all words</button></div>';
     if (ui.bulkMsg) html += '<p class="bulk-msg" role="status">' + esc(ui.bulkMsg) + "</p>";
+    var mPool = matchPool("add");
+    if (mPool && mPool.words.length >= 2) {
+      var addBest = bestMatchMs((progress.completions || []).filter(function (e) { return e.kind === "add"; }));
+      html += "<h2>Match my words</h2><div class=\"actions\">" + matchButtonHtml("add", "all", " · " + mPool.words.length + " words" + (addBest != null ? " · best " + fmtMs(addBest) : "")) + "</div>";
+    }
     html += "<h2>Move words</h2>";
     html += "<p>Export saves words, vocab chapters, grammar chapters, mistakes, and stats as jlpt-n2-progress.json. Data is also kept in localStorage and IndexedDB on this device. Import replaces them here.</p>";
     html += '<button type="button" class="secondary" data-act="export">Export backup</button>';
@@ -3172,6 +3319,10 @@ if (typeof document !== "undefined") {
       location.hash = "#" + page;
       return;
     }
+    if (ui.match) {
+      if (ui.match.back === "#" + page) { renderMatch(); return; }
+      ui.match = null;
+    }
     if (page !== activePage) { flushActiveTime(); activePage = page; }
     if (page === "today") {
       if (session && session.day === todayISO()) renderSession();
@@ -3587,6 +3738,10 @@ if (typeof document !== "undefined") {
       render();
       return;
     }
+    if (act === "m-start") { startMatch(b.getAttribute("data-kind"), b.getAttribute("data-id")); return; }
+    if (act === "m-tap") { matchTap(b.getAttribute("data-side"), b.getAttribute("data-id"), b); return; }
+    if (act === "m-again") { if (ui.match) { var mk2 = ui.match.kind, mr2 = ui.match.kind === "combo" ? ui.match.ref : ui.match.kind === "ch" ? ui.match.ref : ""; ui.match = null; startMatch(mk2, mr2); } return; }
+    if (act === "m-stop") { ui.match = null; render(); return; }
     if (act === "ch-flash") {
       var flashCh = chapterBy(b.getAttribute("data-id"));
       if (!flashCh || !(flashCh.words && flashCh.words.length)) return;
