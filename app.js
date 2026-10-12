@@ -3148,6 +3148,23 @@ if (typeof document !== "undefined") {
     main.innerHTML = htmlQ;
   }
 
+  /* Size Japanese prompts by length so long words and sentences shrink instead of overflowing. */
+  function sizeJaPrompts(root) {
+    var els = (root || document).querySelectorAll('.quiz-prompt[lang="ja"], .jp.kanji, .dr-card .jp');
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i], c = el.cloneNode(true), rts = c.querySelectorAll("rt");
+      for (var j = 0; j < rts.length; j++) rts[j].parentNode.removeChild(rts[j]);
+      var t = (c.textContent || "").replace(/\s+/g, ""), n = t.length;
+      el.classList.remove("jp-long", "jp-xlong", "jp-sent");
+      if (n >= 14 || /[。、！？]/.test(t)) el.classList.add("jp-sent");
+      else if (n >= 9) el.classList.add("jp-xlong");
+      else if (n >= 6) el.classList.add("jp-long");
+    }
+  }
+  if (typeof MutationObserver === "function") {
+    var jaObs = new MutationObserver(function () { sizeJaPrompts(main); });
+    try { jaObs.observe(main, { childList: true, subtree: true }); } catch (e) {}
+  }
   function render() {
     syncNav();
     var page = pageName();
