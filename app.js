@@ -358,6 +358,7 @@ if (typeof document !== "undefined") {
     });
     if (!Array.isArray(data.drillLog)) data.drillLog = [];
     if (!Array.isArray(data.completions)) data.completions = [];
+    if (!Array.isArray(data.mockLog)) data.mockLog = [];
     if (!data.stats || typeof data.stats !== "object") data.stats = { days: {} };
     if (!data.stats.days || typeof data.stats.days !== "object") data.stats.days = {};
     if (!data.deleted || typeof data.deleted !== "object") data.deleted = {};
@@ -477,6 +478,7 @@ if (typeof document !== "undefined") {
     });
     a.drillLog = byIdMerge(a.drillLog, b.drillLog, tomb);
     a.completions = byIdMerge(a.completions || [], b.completions || [], tomb);
+    a.mockLog = byIdMerge(a.mockLog || [], b.mockLog || [], tomb);
     var mk = {};
     (a.mistakes || []).forEach(function (m) { if (m) mk[m.at + "|" + m.wordId] = 1; });
     (b.mistakes || []).forEach(function (m) { if (m && !mk[m.at + "|" + m.wordId]) a.mistakes.push(m); });
@@ -1265,6 +1267,228 @@ if (typeof document !== "undefined") {
     return '<button type="button" class="secondary m-start" data-act="m-start" data-kind="' + kind + '" data-id="' + esc(id) + '"><span class="action-title">🌸 Match</span><span class="action-desc">Tap a word, then its meaning. 6 pairs a round, timed' + (extraDesc || "") + ".</span></button>";
   }
 
+
+  /* ===================== Timed mock: ~20 exam-order questions, 10 minutes, no feedback until the end ===================== */
+  var TM_ORDER = [["read", 3], ["ortho", 3], ["form", 2], ["ctx", 3], ["para", 3], ["gram", 4], ["comp", 2]];
+  var TM_SIZE = 20, TM_MS = 10 * 60 * 1000;
+  function timedMockAvailable(data) {
+    var n = 0;
+    TM_ORDER.forEach(function (o) { n += (data.items[o[0]] || []).length; });
+    return n;
+  }
+  function startTimedMock() {
+    var data = drillData(), want = {}, pools = {}, qs = [];
+    TM_ORDER.forEach(function (o) { want[o[0]] = o[1]; pools[o[0]] = shuffleIds((data.items[o[0]] || []).slice()); });
+    var bySec = {};
+    function take(sid) {
+      while (pools[sid].length) {
+        var q = buildDrillQuestion(sid, pools[sid].shift(), data);
+        if (q) { (bySec[sid] = bySec[sid] || []).push(q); return true; }
+      }
+      return false;
+    }
+    var total = 0;
+    TM_ORDER.forEach(function (o) { for (var i = 0; i < o[1]; i++) if (take(o[0])) total++; });
+    var grew = true; /* top up from sections that still have items */
+    while (total < TM_SIZE && grew) {
+      grew = false;
+      TM_ORDER.forEach(function (o) { if (total < TM_SIZE && take(o[0])) { total++; grew = true; } });
+    }
+    TM_ORDER.forEach(function (o) { (bySec[o[0]] || []).forEach(function (q) { qs.push(q); }); });
+    if (qs.length < 5) return false;
+    var now = Date.now();
+    ui.tmock = { qs: qs, answers: qs.map(function () { return null; }), placed: qs.map(function () { return [null, null, null, null]; }), index: 0, start: now, deadline: now + TM_MS, end: null, result: null };
+    return true;
+  }
+  function tmLeft() { return ui.tmock ? Math.max(0, ui.tmock.deadline - Date.now()) : 0; }
+  function tmAnswered(i) {
+    var t = ui.tmock, q = t.qs[i];
+    if (q.kind === "comp") return t.placed[i].every(function (x) { return x != null; });
+    return t.answers[i] != null;
+  }
+  function tmCorrect(i) {
+    var t = ui.tmock, q = t.qs[i];
+    if (q.kind === "comp") return t.placed[i].join(",") === "0,1,2,3";
+    return t.answers[i] === q.answer;
+  }
+  function finishTimedMock(timeUp) {
+    var t = ui.tmock;
+    if (!t || t.end) return;
+    t.end = Math.min(Date.now(), t.deadline);
+    var sections = {}, score = 0;
+    t.qs.forEach(function (q, i) {
+      var ok = tmCorrect(i);
+      var row = sections[q.section] = sections[q.section] || [0, 0];
+      row[1] += 1;
+      if (ok) { row[0] += 1; score += 1; }
+      else drillRecord(q, false, "wrong");
+    });
+    t.result = { score: score, total: t.qs.length, sections: sections, timeUp: !!timeUp };
+    if (!Array.isArray(progress.mockLog)) progress.mockLog = [];
+    progress.mockLog.push({ id: newId("tm"), at: new Date().toISOString(), day: todayISO(), score: score, total: t.qs.length, ms: t.end - t.start, timeUp: !!timeUp, sections: sections });
+    bumpStat("drills", 1);
+    saveProgress();
+  }
+  function tmTick() {
+    if (ui._tmTimer) return;
+    ui._tmTimer = setInterval(function () {
+      var t = ui.tmock;
+      if (!t || t.end) { clearInterval(ui._tmTimer); ui._tmTimer = null; return; }
+      var left = tmLeft(), el = document.getElementById("tm-clock");
+      if (left <= 0) { finishTimedMock(true); clearInterval(ui._tmTimer); ui._tmTimer = null; if (pageName() === "drill") render(); return; }
+      if (el) { el.textContent = fmtMs(left); el.classList.toggle("tm-low", left < 60000); }
+    }, 500);
+  }
+  function tmQuestionHtml(q, i, review) {
+    var t = ui.tmock, h = "";
+    if (q.kind === "comp") {
+      var placed = review && tmCorrect(i) ? [0, 1, 2, 3] : t.placed[i];
+      if (q.pre) h += '<p class="dr-pre" lang="ja">' + esc(q.pre) + "</p>";
+      h += '<div class="dr-slots" lang="ja">';
+      for (var s2 = 0; s2 < 4; s2++) {
+        var ix = placed[s2], tx = ix == null ? "" : q.chunks[ix];
+        h += '<button type="button" class="dr-slot' + (s2 === 2 ? " star" : "") + (tx ? " filled" : "") + '"' + (review ? " disabled" : ' data-act="tm-unslot" data-slot="' + s2 + '"') + '><span class="dr-num">' + (s2 === 2 ? "★" : s2 + 1) + "</span>" + esc(tx) + "</button>";
+      }
+      h += '<span class="dr-end">' + esc(q.end || "") + "</span></div>";
+      if (!review) {
+        h += '<div class="dr-chunks" lang="ja">';
+        q.order.forEach(function (ci) {
+          h += '<button type="button" class="choice dr-chunk" data-act="tm-chunk" data-i="' + ci + '"' + (t.placed[i].indexOf(ci) !== -1 ? " disabled" : "") + ">" + esc(q.chunks[ci]) + "</button>";
+        });
+        h += "</div>";
+      } else {
+        h += '<p lang="ja" class="dr-full">' + esc(q.pre || "") + q.chunks.map(function (c2, ci2) { return ci2 === 2 ? "<b>" + esc(c2) + "</b>" : esc(c2); }).join("") + esc(q.end || "") + "</p>";
+      }
+      return h;
+    }
+    h += '<p class="dr-prompt" lang="ja">' + q.prompt + "</p>";
+    q.options.forEach(function (o, oi) {
+      var cls = "choice", mine = t.answers[i] === oi;
+      if (review) { if (oi === q.answer) cls += " right"; else if (mine) cls += " wrong"; }
+      h += '<button type="button" class="' + cls + '" lang="' + q.lang + '" aria-pressed="' + (mine ? "true" : "false") + '"' + (review ? " disabled" : ' data-act="tm-pick" data-i="' + oi + '"') + ">" + (oi + 1) + ". " + esc(o) + "</button>";
+    });
+    return h;
+  }
+  function renderTimedMock() {
+    var t = ui.tmock;
+    if (!t.end && tmLeft() <= 0) finishTimedMock(true);
+    if (t.end) {
+      var r = t.result, html = '<h1>Timed mock · results</h1>';
+      html += '<p class="score">' + r.score + " / " + r.total + "</p>";
+      html += '<p class="muted">' + (r.timeUp ? "Time ran out · " : "") + "Time used " + fmtMs(t.end - t.start) + " of " + fmtMs(TM_MS) + "</p>";
+      html += '<table class="tm-table"><tbody>';
+      TM_ORDER.forEach(function (o) {
+        var row = r.sections[o[0]];
+        if (!row) return;
+        var sec = drillSection(o[0]);
+        html += "<tr><td>" + sec.n + ". " + esc(sec.name) + ' <span lang="ja" class="muted">' + esc(sec.jp) + '</span></td><td class="tm-num">' + row[0] + "/" + row[1] + "</td></tr>";
+      });
+      html += "</tbody></table>";
+      if (r.score < r.total) html += '<p class="muted">Wrong and unanswered items went to Redo.</p>';
+      html += '<h2>Review</h2>';
+      t.qs.forEach(function (q, i) {
+        var ok = tmCorrect(i), sec = drillSection(q.section);
+        html += '<div class="tm-rev ' + (ok ? "ok" : "bad") + '"><p class="mode-label">' + (i + 1) + ". " + esc(sec.name) + " · " + (ok ? "right" : tmAnswered(i) ? "wrong" : "not answered") + "</p>";
+        html += '<p class="dr-ask">' + esc(q.ask) + "</p>" + tmQuestionHtml(q, i, true) + drillCardHtml(q) + "</div>";
+      });
+      html += '<div class="actions"><button type="button" class="primary" data-act="tm-close">Back to Drill</button></div>';
+      main.innerHTML = html;
+      return;
+    }
+    var q = t.qs[t.index], sec = drillSection(q.section), left = tmLeft();
+    var h = '<div class="tm-head"><span class="muted">Timed mock · ' + (t.index + 1) + " / " + t.qs.length + '</span><span id="tm-clock" class="tm-clock' + (left < 60000 ? " tm-low" : "") + '">' + fmtMs(left) + "</span></div>";
+    h += '<div class="tm-dots">';
+    t.qs.forEach(function (_, i) { h += '<button type="button" class="tm-dot' + (i === t.index ? " cur" : "") + (tmAnswered(i) ? " done" : "") + '" data-act="tm-go" data-i="' + i + '" aria-label="Question ' + (i + 1) + '">' + (i + 1) + "</button>"; });
+    h += "</div>";
+    h += '<p class="mode-label">' + sec.n + ". " + esc(sec.name) + ' <span lang="ja">' + esc(sec.jp) + "</span></p>";
+    h += '<p class="dr-ask">' + esc(q.ask) + "</p>" + tmQuestionHtml(q, t.index, false);
+    h += '<div class="row tm-nav"><button type="button" class="secondary" data-act="tm-prev"' + (t.index === 0 ? " disabled" : "") + ">← Back</button>";
+    if (t.index < t.qs.length - 1) h += '<button type="button" class="primary" data-act="tm-next">Next →</button>';
+    else h += '<button type="button" class="primary" data-act="tm-finish">Finish</button>';
+    h += "</div>";
+    var un = t.qs.length - t.qs.filter(function (_, i) { return tmAnswered(i); }).length;
+    h += '<p class="muted">No feedback until the end. ' + (un ? un + " unanswered. " : "All answered. ") + '<button type="button" class="linkish" data-act="tm-finish">Hand in now</button></p>';
+    main.innerHTML = h;
+    tmTick();
+  }
+  function mockHistoryHtml() {
+    var list = (progress.mockLog || []).slice().sort(function (a, b) { return String(b.at).localeCompare(String(a.at)); });
+    var h = '<h2>Timed mock history</h2>';
+    if (!list.length) return h + '<p class="muted">No timed mocks yet. Start one from Drill.</p>';
+    h += '<ul class="cp-list tm-hist">';
+    list.slice(0, 100).forEach(function (e) {
+      h += '<li><span class="cp-when">' + esc(fmtWhen(e.at).replace(" Bucharest", "")) + "</span> · <b>" + e.score + "/" + e.total + "</b> · " + fmtMs(e.ms) + (e.timeUp ? " (time up)" : "") + "</li>";
+    });
+    return h + '</ul><p class="muted">Times are Bucharest time.</p>';
+  }
+
+  /* ===================== More menu + small pages ===================== */
+  var MORE_PAGES = ["more", "wrong", "add", "grammar", "similar", "stats", "settings", "credits", "reading", "listening", "test"];
+  function renderMore() {
+    var open = wrongWordSummaries().filter(function (r) { return r.open; }).length;
+    var gp = 0; (progress.grammarChapters || []).forEach(function (c) { gp += (c.points || []).length; });
+    var meta = typeof syncMeta === "function" ? syncMeta() : {};
+    var tiles = [
+      ["#wrong", "✗", "Wrong", open ? open + " open" : "Nothing open"],
+      ["#add", "＋", "Add", (progress.words || []).length + " words"],
+      ["#grammar", "法", "Gram", gp + (gp === 1 ? " point" : " points")],
+      ["#similar", "似", "Similar words", "Easily confused words"],
+      ["#stats", "▤", "Stats", "Time, streak, drill, mocks"],
+      ["#settings", "⚙", "Sync & settings", meta && meta.lastSync ? "Synced" : "Audio, sync, backup"],
+      ["#credits", "©", "Credits", "Sources and licences"]
+    ];
+    if (todayISO() >= EXAM) tiles = tiles.concat([["#reading", "読", "Read", "Passages"], ["#listening", "聴", "Listen", "Audio questions"], ["#test", "試", "Test", "Mock paper"]]);
+    var h = "<h1>More</h1><div class=\"more-grid\">";
+    tiles.forEach(function (t) {
+      h += '<a class="more-tile" href="' + t[0] + '"><span class="more-ico" aria-hidden="true">' + t[1] + '</span><span class="more-name">' + esc(t[2]) + '</span><span class="more-sub">' + esc(t[3]) + "</span></a>";
+    });
+    main.innerHTML = h + "</div>";
+  }
+  function renderSettings() {
+    var h = "<h1>Sync &amp; settings</h1>";
+    h += syncCardHtml() + audioSettingsHtml();
+    h += '<div class="card"><h2>Furigana</h2><p class="muted">The Furigana button at the top shows readings over kanji on cards and lists. Never on quiz prompts before you answer.</p></div>';
+    h += backupControlsHtml();
+    main.innerHTML = h;
+  }
+  function renderCredits() {
+    var B = builtinItems();
+    var h = "<h1>Credits</h1><div class=\"card credits\">";
+    h += "<p><b>Built-in N2 set and Similar words:</b> original questions and sentences written for this app. No material copied from JLPT samples, prep books or sites.</p>";
+    if (B && B.credits) h += '<p class="muted">' + esc(B.credits) + "</p>";
+    h += "<p><b>Combinations and word selection:</b> OpenJLPT word lists (CC BY-SA 4.0).</p>";
+    h += "<p><b>Readings and meanings checks:</b> JMdict/EDICT, Electronic Dictionary Research and Development Group (CC BY-SA 4.0).</p>";
+    h += "<p><b>Word frequency:</b> FrequencyWords 2016 ja_50k (OpenSubtitles, CC BY-SA 4.0).</p>";
+    h += "<p><b>Audio:</b> your device's Japanese voice (Web Speech API).</p>";
+    h += '<p class="muted">Full details in SOURCES.md in the app’s repository.</p></div>';
+    main.innerHTML = h;
+  }
+  function renderSimilar() {
+    if (ui.drill && ui.drill.scope === "sim") { renderDrillSession(); return; }
+    ensureBuiltin();
+    var data = drillData(), sum = drillSummary(data), B = builtinItems(), r = sum.sections.sim;
+    var h = '<h1>Similar words <span lang="ja" class="muted">紛らわしい語</span></h1>';
+    h += "<p class=\"muted\">Groups of 3–4 easily confused N2 words. Pick the word that fits each sentence; after answering, a one-line note explains the difference. Same Knew it / Elimination / Lucky guess and Redo as Drill.</p>";
+    var nMine = (data.mine.sim || []).length, nBi = (data.bi.sim || []).length;
+    h += '<div class="actions">';
+    if (r.available) h += '<button type="button" class="primary" data-act="dr-start" data-scope="sim"><span class="action-title">Start · ' + r.available + ' questions</span><span class="action-desc">' + (r.redo ? r.redo + " to redo first · " : "") + "about " + DRILL_SIZE + " a round</span></button>";
+    else h += '<p class="muted">' + (B ? "No questions with the current choice." : "Loading…") + "</p>";
+    h += "</div>";
+    h += '<div class="dr-src" role="group" aria-label="Questions from">';
+    var src = drillSrcFor("sim");
+    [["mine", "My words", nMine], ["builtin", "Built-in", nBi], ["both", "Both", nMine + nBi]].forEach(function (o) {
+      h += '<button type="button" data-act="dr-src" data-sec="sim" data-src="' + o[0] + '" aria-pressed="' + (src === o[0] ? "true" : "false") + '">' + o[1] + ' <span class="dr-src-n">' + o[2] + "</span></button>";
+    });
+    h += "</div>";
+    h += '<p class="muted">My words: auto-groups from your words that share a kanji (needs an example sentence containing the word).</p>';
+    if (B && B.simGroups.length) {
+      h += '<details class="dr-star-list"><summary>The ' + B.simGroups.length + " built-in groups</summary><ul>";
+      B.simGroups.forEach(function (g) { h += '<li><b lang="ja">' + esc(g.title) + "</b> — " + esc(g.note) + "</li>"; });
+      h += "</ul></details>";
+    }
+    main.innerHTML = h;
+  }
+
   /* ===================== Typed answers: the reading in kana =====================
      Her phone keyboard turns a reading into kanji, so typed quizzes ask for the reading.
      Accepted: hiragana, katakana (folded to hiragana), romaji (converted), spaces / 〜 / trailing
@@ -1472,6 +1696,7 @@ if (typeof document !== "undefined") {
     { id: "ctx", n: 4, jp: "文脈規定", name: "Context", desc: "Pick the word that fills the blank.", need: "Add example sentences that contain the word exactly as written (給料 → 給料をもらう。). Needs 4+ such words." },
     { id: "para", n: 5, jp: "言い換え類義", name: "Paraphrase", desc: "Pick the closest meaning of the underlined word.", need: "Add words with English meanings." },
     { id: "gram", n: 6, jp: "文法形式の判断", name: "Grammar form", desc: "Pick the grammar pattern that fills the blank.", need: "Paste at least 4 grammar points, with examples that contain the pattern (〜に際して → 卒業に際して…)." },
+    { id: "sim", n: 8, jp: "紛らわしい語", name: "Similar words", desc: "Groups of easily confused words (similar meaning or kanji). Pick the one that fits the sentence; a note explains the difference.", need: "Built-in groups, or your own words that share a kanji (3+ words, with example sentences containing the word)." },
     { id: "comp", n: 7, jp: "文の組み立て", name: "Sentence composition ★", desc: "Tap the 4 parts in the right order.", need: "Add longer example sentences (about 10+ characters with particles like は・が・を・に) to words or grammar points." }
   ];
   var DRILL_SIZE = 10;
@@ -1606,7 +1831,18 @@ if (typeof document !== "undefined") {
   }
   var builtinLoad = { loading: false, failed: false };
   var builtinIdx = null;
+  var simLoad = { loading: false, failed: false };
+  function ensureSimilar() {
+    if (window.SIMILAR || simLoad.loading) return;
+    simLoad.loading = true; simLoad.failed = false;
+    var sc = document.createElement("script");
+    sc.src = "data/similar.js"; sc.async = true;
+    sc.onload = function () { simLoad.loading = false; builtinIdx = null; var pg = pageName(); if ((pg === "drill" || pg === "similar") && !ui.drill && !ui.tmock) render(); };
+    sc.onerror = function () { simLoad.loading = false; simLoad.failed = true; sc.parentNode && sc.parentNode.removeChild(sc); };
+    document.head.appendChild(sc);
+  }
   function ensureBuiltin() {
+    ensureSimilar();
     if (window.DRILLS || builtinLoad.loading) return;
     builtinLoad.loading = true;
     builtinLoad.failed = false;
@@ -1630,7 +1866,14 @@ if (typeof document !== "undefined") {
     if (builtinIdx) return builtinIdx;
     var D = window.DRILLS;
     if (!D) return null;
-    var out = { read: [], ortho: [], form: [], ctx: [], para: [], gram: [], comp: [], points: {}, star: [], credits: D.credits || "" };
+    var out = { read: [], ortho: [], form: [], ctx: [], para: [], gram: [], comp: [], sim: [], simGroups: [], points: {}, star: [], credits: D.credits || "" };
+    if (window.SIMILAR) (window.SIMILAR.groups || []).forEach(function (g) {
+      out.simGroups.push({ id: g[0], title: g[1], note: g[2], words: g[3] });
+      g[3].forEach(function (w) {
+        out.sim.push({ id: "b:s:" + g[0] + ":" + w[0], bi: "sim", group: g[1], note: g[2], kanji: w[0], reading: w[1], english: w[2], sentence: w[3],
+          wrong: g[3].filter(function (o) { return o[0] !== w[0]; }).map(function (o) { return o[0]; }) });
+      });
+    });
     (D.gram || []).forEach(function (g) {
       var pt = { pid: g[0], pattern: g[1], reading: g[2], meaning: g[3], note: g[4], star: !!g[5], n: (g[6] || []).length };
       out.points[pt.pid] = pt;
@@ -1690,6 +1933,7 @@ if (typeof document !== "undefined") {
     if (section === "read") q = mcq(section, key, "bword", it, underlineIn(it.sentence, it.kanji), "How is the underlined word read?", it.reading, it.wrong);
     else if (section === "ortho") q = mcq(section, key, "bword", it, underlineIn(it.sentence, it.kanji, it.reading), "Which is the right way to write the underlined word?", it.kanji, it.wrong);
     else if (section === "ctx") q = mcq(section, key, "bword", it, biBlank(it.sentence), "Which word fits the blank?", it.kanji, it.wrong);
+    else if (section === "sim") q = mcq(section, key, "bword", it, biBlank(it.sentence), "Which word fits the blank?", it.kanji, it.wrong);
     else if (section === "para") q = mcq(section, key, "bword", it, biUnderline(it.sentence), "Which is closest in meaning to the underlined part?", it.answer, it.wrong);
     else if (section === "form") {
       q = mcq(section, key, "bword", it, biBlank(it.sentence, "（　）"), it.mode === "pre" ? "Which prefix completes the word?" : "Which suffix completes the word?", it.answer, it.wrong);
@@ -1885,6 +2129,27 @@ if (typeof document !== "undefined") {
       if (!gd) return null;
       return mcq(section, key, "gram", it, gMaskLeak(gb.html, it), "Which grammar fits the blank?", it.core, gd);
     }
+    if (section === "sim") {
+      if (!it.kanji || !dHasKanji(it.kanji) || !it.example || it.example.indexOf(it.kanji) === -1) return null;
+      var sb = blankIn(it.example, it.kanji);
+      if (!sb) return null;
+      var share = {}, sharedChar = {};
+      String(it.kanji).split("").forEach(function (c) {
+        if (!dHasKanji(c)) return;
+        (data.byChar[c] || []).forEach(function (w) {
+          if (w.kanji === it.kanji || !dHasKanji(w.kanji) || it.example.indexOf(w.kanji) !== -1) return;
+          if (data.pool.every(function (p) { return p.kanji !== w.kanji; })) return; /* her words only */
+          if (dOverlap(w.english, it.english)) return;
+          share[w.kanji] = 1; sharedChar[w.kanji] = c;
+        });
+      });
+      var sOpts = takeDistinct(it.kanji, [{ list: shuffleIds(Object.keys(share)) }], 3);
+      if (!sOpts) sOpts = Object.keys(share).length >= 2 ? shuffleIds(Object.keys(share)).slice(0, 2) : null;
+      if (!sOpts) return null;
+      var sq = mcq(section, key, "word", it, sb.html, "Which of your words fits the blank? (they share a kanji)", it.kanji, sOpts);
+      sq.simShared = sOpts.map(function (k) { return k + " (" + sharedChar[k] + ")"; });
+      return sq;
+    }
     if (section === "comp") {
       if (!it.example) return null;
       var protect = it.core || it.kanji || "";
@@ -2068,6 +2333,7 @@ if (typeof document !== "undefined") {
       html += '<div class="jp" lang="ja">' + (furigana && it.reading && it.reading !== it.kanji ? "<ruby>" + esc(it.kanji) + "<rt>" + esc(it.reading) + "</rt></ruby>" : esc(it.kanji)) + "</div>";
       html += '<p class="meaning" lang="ja">' + esc(it.reading) + "</p>";
       html += '<p class="meaning">' + esc(it.english) + "</p>";
+      if (q.simShared) html += '<p class="dr-note">Also yours, sharing a kanji: <span lang="ja">' + esc(q.simShared.join("、")) + "</span></p>";
     }
     if (it.example) html += '<p lang="ja">' + esc(it.example) + "</p>";
     html += sayButtonsHtml(drillSpeechText(q), drillSentenceText(q));
@@ -2087,7 +2353,7 @@ if (typeof document !== "undefined") {
     if (it.bi === "comp") return (it.pre || "") + (it.parts || []).join("") + (it.post || "");
     if (it.bi === "gram") return String(it.sentence).replace("＿＿", it.answer);
     if (it.bi === "form") return String(it.sentence).replace("＿＿", it.answer);
-    if (it.bi === "ctx") return String(it.sentence).replace("＿＿", it.kanji);
+    if (it.bi === "ctx" || it.bi === "sim") return String(it.sentence).replace("＿＿", it.kanji);
     if (it.bi === "para") return String(it.sentence).replace(/[{}]/g, "");
     if (it.bi) return it.sentence || "";
     return it.example || "";
@@ -2108,6 +2374,7 @@ if (typeof document !== "undefined") {
       html += '<p class="meaning">' + esc(it.english) + "</p>";
       if (it.bi === "para") html += '<p lang="ja">≈ ' + esc(it.answer) + "</p>" + '<p lang="ja">' + biUnderline(it.sentence) + "</p>";
       else if (it.bi === "ctx") html += '<p lang="ja">' + biBlank(it.sentence, it.kanji).replace('class="dr-blank"', 'class="dr-fill"') + "</p>";
+      else if (it.bi === "sim") html += '<p lang="ja">' + biBlank(it.sentence, it.kanji).replace('class="dr-blank"', 'class="dr-fill"') + "</p>" + '<p class="dr-note"><b lang="ja">' + esc(it.group) + "</b> — " + esc(it.note) + "</p>";
       else if (it.bi === "form") html += '<p lang="ja">' + biBlank(it.sentence, it.answer).replace('class="dr-blank"', 'class="dr-fill"') + "</p>";
       else html += '<p lang="ja">' + esc(it.sentence) + "</p>";
     }
@@ -2186,6 +2453,7 @@ if (typeof document !== "undefined") {
     main.innerHTML = html2;
   }
   function renderDrill() {
+    if (ui.tmock) { renderTimedMock(); return; }
     if (ui.drill) { renderDrillSession(); return; }
     ensureBuiltin();
     var data = drillData();
@@ -2197,6 +2465,7 @@ if (typeof document !== "undefined") {
     if (sum.total.redo) html += '<button type="button" class="primary" data-act="dr-start" data-scope="redo"><span class="action-title">Redo · ' + sum.total.redo + '</span><span class="action-desc">Wrong answers first, then lucky guesses, then eliminations.</span></button>';
     else html += '<div class="dr-none"><b>Redo · 0</b> <span class="muted">' + (sum.total.waiting ? sum.total.waiting + " waiting for another day." : "Nothing to redo.") + "</span></div>";
     var anyAvail = DRILL_SECTIONS.some(function (s) { return sum.sections[s.id].available; });
+    if (timedMockAvailable(data) >= 10) html += '<button type="button" class="secondary tm-start" data-act="tm-start"><span class="action-title">⏱ Timed mock</span><span class="action-desc">About ' + TM_SIZE + ' questions in exam order, 10 minutes, no hints or feedback until the end.</span></button>';
     if (anyAvail) html += '<button type="button" class="secondary" data-act="dr-start" data-scope="mixed"><span class="action-title">Mixed round</span><span class="action-desc">All unlocked sections together, using each section’s My items / Built-in choice.</span></button>';
     html += "</div>";
     if (sum.total.redo && sum.total.waiting) html += '<p class="muted">' + sum.total.waiting + " more waiting for another day (you knew them today; check again tomorrow).</p>";
@@ -2257,13 +2526,13 @@ if (typeof document !== "undefined") {
 
   function pageName() {
     var hash = (location.hash || "#today").replace("#", "");
-    var open = ["today", "drill", "chapters", "combos", "wrong", "stats", "add", "grammar"];
+    var open = ["today", "drill", "chapters", "combos", "wrong", "stats", "add", "grammar", "more", "similar", "settings", "credits"];
     if (todayISO() >= EXAM) open = open.concat(["reading", "listening", "test"]);
     if (open.indexOf(hash) === -1) return "today";
     return hash;
   }
   function syncNav() {
-    if (todayISO() >= EXAM && !nav.querySelector('[href="#reading"]')) {
+    if (false) {
       [
         ["#reading", "読", "Read"],
         ["#listening", "聴", "Listen"],
@@ -2278,7 +2547,7 @@ if (typeof document !== "undefined") {
     var page = pageName();
     nav.querySelectorAll("a").forEach(function (a) {
       var id = (a.getAttribute("href") || "").replace("#", "");
-      if (id === page || (page === "stats" && id === "today")) a.setAttribute("aria-current", "page");
+      if (id === page || (id === "more" && MORE_PAGES.indexOf(page) !== -1)) a.setAttribute("aria-current", "page");
       else a.removeAttribute("aria-current");
     });
     if (furiBtn) furiBtn.setAttribute("aria-pressed", furigana ? "true" : "false");
@@ -2360,6 +2629,7 @@ if (typeof document !== "undefined") {
     });
     if (!listed) html += '<div class="empty"><p>No study logged yet. Time counts while this page is open and visible.</p></div>';
     html += "</div>";
+    html += mockHistoryHtml();
     html += backupControlsHtml();
     html += audioSettingsHtml();
     main.innerHTML = html;
@@ -3334,6 +3604,10 @@ if (typeof document !== "undefined") {
     else if (page === "stats") renderStats();
     else if (page === "add") renderAdd();
     else if (page === "grammar") renderGrammar();
+    else if (page === "more") renderMore();
+    else if (page === "similar") renderSimilar();
+    else if (page === "settings") renderSettings();
+    else if (page === "credits") renderCredits();
     else if (page === "reading") renderReading();
     else if (page === "listening") renderListening();
     else if (page === "test") renderTest();
@@ -3351,6 +3625,7 @@ if (typeof document !== "undefined") {
       grammarChapters: progress.grammarChapters || [],
       drillLog: progress.drillLog || [],
       completions: progress.completions || [],
+      mockLog: progress.mockLog || [],
       stats: progress.stats || { days: {} }
     }, null, 2)], { type: "application/json" });
     var a = document.createElement("a");
@@ -3450,6 +3725,23 @@ if (typeof document !== "undefined") {
       if (!startDrill(b.getAttribute("data-scope"))) { window.alert("No questions available here yet."); return; }
       render();
       window.scrollTo(0, 0);
+      return;
+    }
+    if (act === "tm-start") { if (!startTimedMock()) { window.alert("Not enough questions for a mock yet."); return; } render(); window.scrollTo(0, 0); return; }
+    if (act === "tm-close") { ui.tmock = null; render(); window.scrollTo(0, 0); return; }
+    if (ui.tmock && !ui.tmock.end && /^tm-/.test(act)) {
+      var tm = ui.tmock, tq = tm.qs[tm.index];
+      if (tmLeft() <= 0) { finishTimedMock(true); render(); return; }
+      if (act === "tm-pick") tm.answers[tm.index] = parseInt(b.getAttribute("data-i"), 10);
+      else if (act === "tm-chunk") { var tci = parseInt(b.getAttribute("data-i"), 10), pl = tm.placed[tm.index]; if (pl.indexOf(tci) === -1) for (var tsi = 0; tsi < 4; tsi++) if (pl[tsi] == null) { pl[tsi] = tci; break; } }
+      else if (act === "tm-unslot") tm.placed[tm.index][parseInt(b.getAttribute("data-slot"), 10)] = null;
+      else if (act === "tm-next") tm.index = Math.min(tm.qs.length - 1, tm.index + 1);
+      else if (act === "tm-prev") tm.index = Math.max(0, tm.index - 1);
+      else if (act === "tm-go") tm.index = Math.max(0, Math.min(tm.qs.length - 1, parseInt(b.getAttribute("data-i"), 10)));
+      else if (act === "tm-finish") finishTimedMock(false);
+      void tq;
+      render();
+      if (act !== "tm-pick" && act !== "tm-chunk" && act !== "tm-unslot") window.scrollTo(0, 0);
       return;
     }
     if (act === "dr-home") {
@@ -4231,6 +4523,7 @@ if (typeof document !== "undefined") {
           grammarChapters: Array.isArray(data.grammarChapters) ? data.grammarChapters : [],
           drillLog: Array.isArray(data.drillLog) ? data.drillLog : [],
           completions: Array.isArray(data.completions) ? data.completions : [],
+          mockLog: Array.isArray(data.mockLog) ? data.mockLog : [],
           stats: (data.stats && typeof data.stats === "object") ? data.stats : { days: {} }
         });
         writeLocal(progress);

@@ -110,3 +110,19 @@ After an answer, a flashcard flip or Drill feedback, the app speaks the reading 
 ## Completion counts and History
 
 Every chapter (Chapters), grammar chapter (Gram) and Combos level shows a **×N** badge: how many runs were finished to the last card or question, any mode (hover/long-press for the per-mode split; the chapter/level page shows it too). Each list page ends with **History**: finished runs newest first with Bucharest date + time, name, mode and score. Runs are stored as events in `completions` (with ids) and merge across devices through the gist as a union. Wrong-words runs and stopped runs are not counted.
+
+## Match
+
+Chapters, Combos levels, Wrong words (open) and Add (all your words) have **🌸 Match**: 6 kanji tiles and 6 shuffled meanings per round, through the whole set. A right pair turns green, fades out and the reading is spoken; a wrong pair shakes red and the word goes to the miss log (once per run). The end screen shows time, mistakes and best time. A finished run counts toward the ×N badge and History as mode "Match"; the ⏱ badge is the best time.
+
+## Timed mock (Drill)
+
+About 20 questions in exam order (reading, orthography, word formation, context, paraphrase, grammar, composition), 10-minute countdown, no hints, feedback or audio until you hand in (or time runs out). Results show a score per section and a review of every item with its full card and 🔊. Wrong and unanswered items go to Redo. Mock history (date, score, time) is in Stats and syncs (`mockLog`).
+
+## Similar words
+
+More → Similar words (also section 8 in Drill): 41 original groups of 3–4 easily confused N2 words (124 questions, `data/similar.js`), plus auto-groups from your own words that share a kanji. Pick the word that fits; after answering a one-line note explains the difference. Same Knew it / Elimination / Lucky guess + Redo flow.
+
+## Menu
+
+Bottom bar: Today, Drill, Chaps, Combos, More. More has tiles for Wrong, Add, Gram, Similar words, Stats, Sync & settings, Credits (and Read/Listen/Test after the exam date).

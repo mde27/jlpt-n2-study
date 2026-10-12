@@ -14,7 +14,8 @@ var FILES = [
   "./data/reading.js",
   "./data/listening.js",
   "./data/mock.js",
-  "./data/drills.js"
+  "./data/drills.js",
+  "./data/similar.js"
 ];
 
 self.addEventListener("install", function (event) {

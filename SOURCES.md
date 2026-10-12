@@ -68,3 +68,7 @@ Built 8 October 2026. Everything in this file that a learner reads as a question
 - Tatoeba: not used in this set (all sentences are original), so no sentence ids are needed.
 - Distractors: grammar wrong options are other N2 patterns that are ungrammatical in the slot (wrong connection form) or clearly illogical; points that would also fit (末に for あげく, ばかりだ for 一方だ, わりに for にしては, 上は / からには for 以上) were deliberately not offered.
 - `data/drills.js` as a whole is shared under CC BY-SA 4.0 because the word selection derives from OpenJLPT and the checks from JMdict.
+
+## Similar words (`data/similar.js`)
+
+All 41 groups, example sentences and difference notes are original, written for this app (no JLPT samples, prep books or websites copied). Word choice reflects common N2 confusions (same reading, shared kanji, or overlapping meaning). Built from `similar.py`, which checks each group has 3–4 distinct words, each sentence has exactly one blank and none of the group's words appears in its sentence. Auto-groups use only your own words.
