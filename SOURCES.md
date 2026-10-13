@@ -72,3 +72,7 @@ Built 8 October 2026. Everything in this file that a learner reads as a question
 ## Similar words (`data/similar.js`)
 
 All 41 groups, example sentences and difference notes are original, written for this app (no JLPT samples, prep books or websites copied). Word choice reflects common N2 confusions (same reading, shared kanji, or overlapping meaning). Built from `similar.py`, which checks each group has 3–4 distinct words, each sentence has exactly one blank and none of the group's words appears in its sentence. Auto-groups use only your own words.
+
+## Beyond-N2 kanji (`data/furi.js`)
+
+Kanji levels: kanji-data by David Luz Gouveia (KANJIDIC2-derived old JLPT levels + new-level estimates, MIT) and OpenJLPT kanji/vocab lists (CC BY-SA 4.0). Readings: the app's own OpenJLPT/built-in data, else UniDic (unidic-lite, via fugashi, BSD). There has been no official JLPT kanji list since 2010, so levels are estimates.

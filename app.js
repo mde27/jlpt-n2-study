@@ -1176,6 +1176,7 @@ if (typeof document !== "undefined") {
     m.pos += ids.length; m.sel = null;
   }
   function matchWordLabel(w) { return w.kanji || w.reading; }
+  function matchWordHtml(w) { return ui.match && ui.match.kind === "combo" && hasHard(w.kanji) ? wordRubyHtml(w.kanji, w.reading) : esc(matchWordLabel(w)); }
   function matchSameMeaning(a, b) { var m = ui.match; return a === b || (m.byId[a] && m.byId[b] && m.byId[a].english === m.byId[b].english); }
   function renderMatch() {
     var m = ui.match, total = m.order.length, doneN = Object.keys(m.done).length;
@@ -1198,7 +1199,7 @@ if (typeof document !== "undefined") {
     var r = m.round;
     for (var i = 0; i < r.left.length; i++) {
       var L = r.left[i], R = r.right[i];
-      html += '<button type="button" class="m-tile m-word' + (m.done[L] ? " m-gone" : "") + (m.sel && m.sel.side === "w" && m.sel.id === L ? " m-sel" : "") + '" lang="ja" data-act="m-tap" data-side="w" data-id="' + esc(L) + '"' + (m.done[L] ? " disabled" : "") + ">" + esc(matchWordLabel(m.byId[L])) + "</button>";
+      html += '<button type="button" class="m-tile m-word' + (m.done[L] ? " m-gone" : "") + (m.sel && m.sel.side === "w" && m.sel.id === L ? " m-sel" : "") + '" lang="ja" data-act="m-tap" data-side="w" data-id="' + esc(L) + '"' + (m.done[L] ? " disabled" : "") + ">" + matchWordHtml(m.byId[L]) + "</button>";
       html += '<button type="button" class="m-tile m-mean' + (m.done[R] ? " m-gone" : "") + (m.sel && m.sel.side === "m" && m.sel.id === R ? " m-sel" : "") + '" data-act="m-tap" data-side="m" data-id="' + esc(R) + '"' + (m.done[R] ? " disabled" : "") + ">" + esc(m.byId[R].english) + "</button>";
     }
     html += "</div>";
@@ -1343,21 +1344,21 @@ if (typeof document !== "undefined") {
     var t = ui.tmock, h = "";
     if (q.kind === "comp") {
       var placed = review && tmCorrect(i) ? [0, 1, 2, 3] : t.placed[i];
-      if (q.pre) h += '<p class="dr-pre" lang="ja">' + esc(q.pre) + "</p>";
+      if (q.pre) h += '<p class="dr-pre" lang="ja">' + optHtml(q, q.pre) + "</p>";
       h += '<div class="dr-slots" lang="ja">';
       for (var s2 = 0; s2 < 4; s2++) {
         var ix = placed[s2], tx = ix == null ? "" : q.chunks[ix];
         h += '<button type="button" class="dr-slot' + (s2 === 2 ? " star" : "") + (tx ? " filled" : "") + '"' + (review ? " disabled" : ' data-act="tm-unslot" data-slot="' + s2 + '"') + '><span class="dr-num">' + (s2 === 2 ? "★" : s2 + 1) + "</span>" + esc(tx) + "</button>";
       }
-      h += '<span class="dr-end">' + esc(q.end || "") + "</span></div>";
+      h += '<span class="dr-end">' + optHtml(q, q.end || "") + "</span></div>";
       if (!review) {
         h += '<div class="dr-chunks" lang="ja">';
         q.order.forEach(function (ci) {
-          h += '<button type="button" class="choice dr-chunk" data-act="tm-chunk" data-i="' + ci + '"' + (t.placed[i].indexOf(ci) !== -1 ? " disabled" : "") + ">" + esc(q.chunks[ci]) + "</button>";
+          h += '<button type="button" class="choice dr-chunk" data-act="tm-chunk" data-i="' + ci + '"' + (t.placed[i].indexOf(ci) !== -1 ? " disabled" : "") + ">" + optHtml(q, q.chunks[ci]) + "</button>";
         });
         h += "</div>";
       } else {
-        h += '<p lang="ja" class="dr-full">' + esc(q.pre || "") + q.chunks.map(function (c2, ci2) { return ci2 === 2 ? "<b>" + esc(c2) + "</b>" : esc(c2); }).join("") + esc(q.end || "") + "</p>";
+        h += '<p lang="ja" class="dr-full">' + optHtml(q, q.pre || "") + q.chunks.map(function (c2, ci2) { return ci2 === 2 ? "<b>" + optHtml(q, c2) + "</b>" : optHtml(q, c2); }).join("") + optHtml(q, q.end || "") + "</p>";
       }
       return h;
     }
@@ -1365,7 +1366,7 @@ if (typeof document !== "undefined") {
     q.options.forEach(function (o, oi) {
       var cls = "choice", mine = t.answers[i] === oi;
       if (review) { if (oi === q.answer) cls += " right"; else if (mine) cls += " wrong"; }
-      h += '<button type="button" class="' + cls + '" lang="' + q.lang + '" aria-pressed="' + (mine ? "true" : "false") + '"' + (review ? " disabled" : ' data-act="tm-pick" data-i="' + oi + '"') + ">" + (oi + 1) + ". " + esc(o) + "</button>";
+      h += '<button type="button" class="' + cls + '" lang="' + q.lang + '" aria-pressed="' + (mine ? "true" : "false") + '"' + (review ? " disabled" : ' data-act="tm-pick" data-i="' + oi + '"') + ">" + (oi + 1) + ". " + optHtml(q, o) + "</button>";
     });
     return h;
   }
@@ -1483,10 +1484,52 @@ if (typeof document !== "undefined") {
     h += '<p class="muted">My words: auto-groups from your words that share a kanji (needs an example sentence containing the word).</p>';
     if (B && B.simGroups.length) {
       h += '<details class="dr-star-list"><summary>The ' + B.simGroups.length + " built-in groups</summary><ul>";
-      B.simGroups.forEach(function (g) { h += '<li><b lang="ja">' + esc(g.title) + "</b> — " + esc(g.note) + "</li>"; });
+      B.simGroups.forEach(function (g) { h += '<li><b lang="ja">' + rubyHard(g.title) + "</b> — " + rubyHard(g.note) + "</li>"; });
       h += "</ul></details>";
     }
     main.innerHTML = h;
+  }
+
+
+  /* ===================== Beyond-N2 kanji in built-in content: always furigana, never tested for reading/writing =====================
+     data/furi.js lists kanji that are N1-only or unlisted on both the old-JLPT and new-level kanji lists and appear in no
+     N5–N2 OpenJLPT word, plus readings for every built-in word that contains one. Her own items are never touched. */
+  var furiHardRe = null, furiKeysRe = null;
+  function furiData() { return window.FURI_HARD || { kanji: "", words: {} }; }
+  function hasHard(t) {
+    var F = furiData();
+    if (!F.kanji) return false;
+    if (!furiHardRe) furiHardRe = new RegExp("[" + F.kanji + "]");
+    return furiHardRe.test(String(t || ""));
+  }
+  function segHtml(sg) {
+    return sg.map(function (x) { return typeof x === "string" ? esc(x) : "<ruby>" + esc(x[0]) + "<rt>" + esc(x[1]) + "</rt></ruby>"; }).join("");
+  }
+  /* Escaped HTML of a built-in string with ruby over beyond-N2 words. `skip` = a word being tested (left bare). */
+  function rubyHard(text, skip) {
+    text = String(text == null ? "" : text);
+    if (!hasHard(text)) return esc(text);
+    var F = furiData(), keys = Object.keys(F.words);
+    if (!furiKeysRe) furiKeysRe = new RegExp(keys.sort(function (a, b) { return b.length - a.length; }).map(function (k) { return k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }).join("|"), "g");
+    var out = "", last = 0, m;
+    furiKeysRe.lastIndex = 0;
+    while ((m = furiKeysRe.exec(text))) {
+      if (skip && text.substr(m.index, skip.length) === skip) { continue; }
+      out += esc(text.slice(last, m.index)) + segHtml(F.words[m[0]]);
+      last = m.index + m[0].length;
+    }
+    return out + esc(text.slice(last));
+  }
+  /* A word with its reading: ruby when it has beyond-N2 kanji (or the Furigana toggle is on). */
+  function wordRubyHtml(kanji, reading) {
+    if (!kanji) return "";
+    if (hasHard(kanji)) { var sg = furiData().words[kanji]; if (sg) return segHtml(sg); if (reading && reading !== kanji) return "<ruby>" + esc(kanji) + "<rt>" + esc(reading) + "</rt></ruby>"; }
+    if (furigana && reading && reading !== kanji) return "<ruby>" + esc(kanji) + "<rt>" + esc(reading) + "</rt></ruby>";
+    return esc(kanji);
+  }
+  function biPatternHtml(pt) {
+    if (pt && hasHard(pt.pattern) && pt.reading) return "<ruby>" + esc(pt.pattern) + "<rt>" + esc(pt.reading) + "</rt></ruby>";
+    return gPatternHtml(pt || {});
   }
 
   /* ===================== Typed answers: the reading in kana =====================
@@ -1887,6 +1930,9 @@ if (typeof document !== "undefined") {
       out.comp.push({ id: "b:c:" + c[0], bi: "comp", point: pt, star: !!(pt && pt.star), pre: c[1], parts: c[2], post: c[3] });
     });
     (D.vocab || []).forEach(function (v) {
+      /* Beyond-N2 kanji are never tested for reading or writing: such words stay only as context (with furigana). */
+      if (hasHard(v[0]) || hasHard(v[3].replace(v[0], ""))) { out.beyond = (out.beyond || 0) + 1; return; }
+      if ((v[5] || []).some(hasHard)) { out.read.push({ id: "b:v:" + v[0], bi: "read", kanji: v[0], reading: v[1], english: v[2], sentence: v[3], wrong: v[4] }); out.beyondOrtho = (out.beyondOrtho || 0) + 1; return; }
       out.read.push({ id: "b:v:" + v[0], bi: "read", kanji: v[0], reading: v[1], english: v[2], sentence: v[3], wrong: v[4] });
       out.ortho.push({ id: "b:v:" + v[0], bi: "ortho", kanji: v[0], reading: v[1], english: v[2], sentence: v[3], wrong: v[5] });
     });
@@ -1922,16 +1968,22 @@ if (typeof document !== "undefined") {
   }
   function biBlank(sentence, label) {
     var i = sentence.indexOf("＿＿");
-    return esc(sentence.slice(0, i)) + '<span class="dr-blank">' + esc(label || "（　　）") + "</span>" + esc(sentence.slice(i + 2));
+    return rubyHard(sentence.slice(0, i)) + '<span class="dr-blank">' + rubyHard(label || "（　　）") + "</span>" + rubyHard(sentence.slice(i + 2));
   }
   function biUnderline(sentence) {
     var a = sentence.indexOf("{"), b = sentence.indexOf("}");
-    return esc(sentence.slice(0, a)) + '<u class="dr-u">' + esc(sentence.slice(a + 1, b)) + "</u>" + esc(sentence.slice(b + 1));
+    return rubyHard(sentence.slice(0, a)) + '<u class="dr-u">' + rubyHard(sentence.slice(a + 1, b)) + "</u>" + rubyHard(sentence.slice(b + 1));
+  }
+  /* Underline for built-in reading/orthography: the tested word stays bare, other beyond-N2 words get ruby. */
+  function biUnderlineWord(sentence, word, replacement) {
+    var i = sentence.indexOf(word);
+    if (i === -1) return null;
+    return rubyHard(sentence.slice(0, i)) + '<u class="dr-u">' + esc(replacement == null ? word : replacement) + "</u>" + rubyHard(sentence.slice(i + word.length));
   }
   function buildBuiltinQuestion(section, it) {
     var key = section + ":" + it.id, q = null;
-    if (section === "read") q = mcq(section, key, "bword", it, underlineIn(it.sentence, it.kanji), "How is the underlined word read?", it.reading, it.wrong);
-    else if (section === "ortho") q = mcq(section, key, "bword", it, underlineIn(it.sentence, it.kanji, it.reading), "Which is the right way to write the underlined word?", it.kanji, it.wrong);
+    if (section === "read") q = mcq(section, key, "bword", it, biUnderlineWord(it.sentence, it.kanji), "How is the underlined word read?", it.reading, it.wrong);
+    else if (section === "ortho") q = mcq(section, key, "bword", it, biUnderlineWord(it.sentence, it.kanji, it.reading), "Which is the right way to write the underlined word?", it.kanji, it.wrong);
     else if (section === "ctx") q = mcq(section, key, "bword", it, biBlank(it.sentence), "Which word fits the blank?", it.kanji, it.wrong);
     else if (section === "sim") q = mcq(section, key, "bword", it, biBlank(it.sentence), "Which word fits the blank?", it.kanji, it.wrong);
     else if (section === "para") q = mcq(section, key, "bword", it, biUnderline(it.sentence), "Which is closest in meaning to the underlined part?", it.answer, it.wrong);
@@ -1997,6 +2049,8 @@ if (typeof document !== "undefined") {
     });
     return got.length >= n ? got : null;
   }
+  /* Option text: built-in items (not reading/orthography) get ruby over beyond-N2 kanji. */
+  function optHtml(q, o) { return q && q.bi && q.section !== "read" && q.section !== "ortho" ? rubyHard(o) : esc(o); }
   function mcq(section, key, srcType, item, promptHtml, ask, correct, distractors, labelLang) {
     var opts = shuffleIds([correct].concat(distractors));
     return { section: section, key: key, srcType: srcType, item: item, prompt: promptHtml, ask: ask, kind: "mcq", lang: labelLang || "ja",
@@ -2363,20 +2417,20 @@ if (typeof document !== "undefined") {
     html += '<p class="dr-bi-tag">Built-in N2 set' + (it.star ? " · ★ important" : "") + "</p>";
     if (it.bi === "gram" || it.bi === "comp") {
       var pt = it.point || {};
-      html += '<div class="jp" lang="ja">' + gPatternHtml(pt) + (pt.star ? ' <span class="dr-star" title="important">★</span>' : "") + "</div>";
+      html += '<div class="jp" lang="ja">' + biPatternHtml(pt) + (pt.star ? ' <span class="dr-star" title="important">★</span>' : "") + "</div>";
       html += gReadingLine(pt);
       html += '<p class="meaning">' + esc(pt.meaning || "") + "</p>";
-      if (pt.note) html += '<p class="dr-note" lang="ja">' + esc(pt.note) + "</p>";
+      if (pt.note) html += '<p class="dr-note" lang="ja">' + rubyHard(pt.note) + "</p>";
       if (it.bi === "gram") html += '<p lang="ja">' + biBlank(it.sentence, it.answer).replace('class="dr-blank"', 'class="dr-fill"') + "</p>";
     } else {
-      html += '<div class="jp" lang="ja">' + (furigana && it.reading && it.reading !== it.kanji ? "<ruby>" + esc(it.kanji) + "<rt>" + esc(it.reading) + "</rt></ruby>" : esc(it.kanji)) + "</div>";
+      html += '<div class="jp" lang="ja">' + wordRubyHtml(it.kanji, it.reading) + "</div>";
       if (it.reading && it.reading !== it.kanji) html += '<p class="meaning" lang="ja">' + esc(it.reading) + "</p>";
       html += '<p class="meaning">' + esc(it.english) + "</p>";
-      if (it.bi === "para") html += '<p lang="ja">≈ ' + esc(it.answer) + "</p>" + '<p lang="ja">' + biUnderline(it.sentence) + "</p>";
+      if (it.bi === "para") html += '<p lang="ja">≈ ' + rubyHard(it.answer) + "</p>" + '<p lang="ja">' + biUnderline(it.sentence) + "</p>";
       else if (it.bi === "ctx") html += '<p lang="ja">' + biBlank(it.sentence, it.kanji).replace('class="dr-blank"', 'class="dr-fill"') + "</p>";
-      else if (it.bi === "sim") html += '<p lang="ja">' + biBlank(it.sentence, it.kanji).replace('class="dr-blank"', 'class="dr-fill"') + "</p>" + '<p class="dr-note"><b lang="ja">' + esc(it.group) + "</b> — " + esc(it.note) + "</p>";
+      else if (it.bi === "sim") html += '<p lang="ja">' + biBlank(it.sentence, it.kanji).replace('class="dr-blank"', 'class="dr-fill"') + "</p>" + '<p class="dr-note"><b lang="ja">' + rubyHard(it.group) + "</b> — " + rubyHard(it.note) + "</p>";
       else if (it.bi === "form") html += '<p lang="ja">' + biBlank(it.sentence, it.answer).replace('class="dr-blank"', 'class="dr-fill"') + "</p>";
-      else html += '<p lang="ja">' + esc(it.sentence) + "</p>";
+      else html += '<p lang="ja">' + rubyHard(it.sentence) + "</p>";
     }
     html += sayButtonsHtml(drillSpeechText(q), drillSentenceText(q));
     html += "</div>";
@@ -2405,19 +2459,19 @@ if (typeof document !== "undefined") {
     html2 += '<p class="dr-ask">' + esc(q.ask) + "</p>";
     var a = st.answered;
     if (q.kind === "comp") {
-      if (q.pre) html2 += '<p class="dr-pre" lang="ja">' + esc(q.pre) + "</p>";
+      if (q.pre) html2 += '<p class="dr-pre" lang="ja">' + optHtml(q, q.pre) + "</p>";
       html2 += '<div class="dr-slots" lang="ja">';
       for (var s = 0; s < 4; s++) {
         var idx = a ? (a.ok ? s : st.placed[s]) : st.placed[s];
         var txt = idx == null ? "" : q.chunks[idx];
         html2 += '<button type="button" class="dr-slot' + (s === 2 ? " star" : "") + (txt ? " filled" : "") + '" data-act="dr-unslot" data-slot="' + s + '"' + (a ? " disabled" : "") + '><span class="dr-num">' + (s === 2 ? "★" : s + 1) + "</span>" + esc(txt || "") + "</button>";
       }
-      html2 += '<span class="dr-end">' + esc(q.end || "") + "</span></div>";
+      html2 += '<span class="dr-end">' + optHtml(q, q.end || "") + "</span></div>";
       if (!a) {
         html2 += '<div class="dr-chunks" lang="ja">';
         q.order.forEach(function (ci) {
           var used = st.placed.indexOf(ci) !== -1;
-          html2 += '<button type="button" class="choice dr-chunk" data-act="dr-chunk" data-i="' + ci + '"' + (used ? " disabled" : "") + ">" + esc(q.chunks[ci]) + "</button>";
+          html2 += '<button type="button" class="choice dr-chunk" data-act="dr-chunk" data-i="' + ci + '"' + (used ? " disabled" : "") + ">" + optHtml(q, q.chunks[ci]) + "</button>";
         });
         html2 += "</div>";
         if (st.placed.filter(function (x) { return x != null; }).length === 4) html2 += '<button type="button" class="primary" data-act="dr-check">Check</button>';
@@ -2431,13 +2485,13 @@ if (typeof document !== "undefined") {
           if (i === q.answer) cls += " right";
           else if (i === a.chosen) cls += " wrong";
         }
-        html2 += '<button type="button" class="' + cls + '" lang="' + q.lang + '" data-act="dr-pick" data-i="' + i + '"' + (a ? " disabled" : "") + ">" + (i + 1) + ". " + esc(o) + "</button>";
+        html2 += '<button type="button" class="' + cls + '" lang="' + q.lang + '" data-act="dr-pick" data-i="' + i + '"' + (a ? " disabled" : "") + ">" + (i + 1) + ". " + optHtml(q, o) + "</button>";
       });
     }
     if (a) {
       html2 += '<p class="' + (a.ok ? "dr-ok" : "warn dr-bad") + '">' + (a.ok ? "Right." : "Not this one.") + "</p>";
       if (q.kind === "comp") {
-        html2 += '<p lang="ja" class="dr-full">' + esc(q.pre || "") + q.chunks.map(function (c2, ci2) { return ci2 === 2 ? "<b>" + esc(c2) + "</b>" : esc(c2); }).join("") + esc(q.end || "") + "</p>";
+        html2 += '<p lang="ja" class="dr-full">' + optHtml(q, q.pre || "") + q.chunks.map(function (c2, ci2) { return ci2 === 2 ? "<b>" + optHtml(q, c2) + "</b>" : optHtml(q, c2); }).join("") + optHtml(q, q.end || "") + "</p>";
       }
       html2 += drillCardHtml(q);
       if (a.ok && !a.marked) {
@@ -2486,7 +2540,7 @@ if (typeof document !== "undefined") {
       html += '<button type="button" class="secondary dr-imp" data-act="dr-imp" aria-pressed="' + (imp ? "true" : "false") + '">' + (imp ? "☑" : "☐") + " ★ Important only <span class=\"muted\">(grammar and composition)</span></button>";
       html += '<div class="actions"><button type="button" class="primary" data-act="dr-start" data-scope="builtin"><span class="action-title">Built-in round</span><span class="action-desc">10 questions from the built-in set across all sections' + (imp ? " (★ only for grammar and composition)" : "") + ".</span></button></div>";
       html += '<details class="dr-star-list"><summary>★ The ' + B.star.length + " important grammar points</summary><ul>";
-      B.star.forEach(function (pt) { html += '<li><span lang="ja">' + gPatternHtml(pt) + "</span> — " + esc(pt.meaning) + "</li>"; });
+      B.star.forEach(function (pt) { html += '<li><span lang="ja">' + biPatternHtml(pt) + "</span> — " + esc(pt.meaning) + "</li>"; });
       html += "</ul></details>";
       html += '<p class="note dr-credits">' + esc(B.credits) + " Details in SOURCES.md.</p>";
     } else if (builtinLoad.failed) {
@@ -2743,6 +2797,11 @@ if (typeof document !== "undefined") {
     });
     ui._comboLabel = pack.band.label + " · " + pack.chunk.label;
     mode = mode === "type" ? "type" : mode === "dark" ? "dark" : "choice";
+    /* Beyond-N2 kanji are not tested for reading/writing (they still show, with furigana, in flashcards, Match and lists). */
+    if (mode !== "dark") {
+      var keep = ui._comboPool.filter(function (w) { return !hasHard(w.kanji); });
+      if (keep.length >= 4) ui._comboPool = keep;
+    }
     ui.chQuiz = {
       comboRef: bandId + ":" + chunkIndex,
       fromCombo: true,
@@ -2936,7 +2995,7 @@ if (typeof document !== "undefined") {
     var w = chapterWordBy(st.chapterId, st.ids[st.index]);
     var html = '<p class="muted">' + esc(ch.name) + " · flashcards · " + (st.index + 1) + " of " + st.ids.length + "</p>";
     if (!st.revealed) {
-      html += '<button type="button" class="card" data-act="ch-flip"><div class="jp kanji" lang="ja">' + esc(w.kanji) + "</div></button>";
+      html += '<button type="button" class="card" data-act="ch-flip"><div class="jp kanji" lang="ja">' + (st.fromCombo && hasHard(w.kanji) ? wordRubyHtml(w.kanji, w.reading) : esc(w.kanji)) + "</div></button>";
     } else {
       html += '<div class="card">';
       if (furigana && w.reading) {
