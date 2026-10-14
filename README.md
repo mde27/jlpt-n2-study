@@ -130,3 +130,7 @@ Bottom bar: Today, Drill, Chaps, Combos, More. More has tiles for Wrong, Add, Gr
 ## Kanji beyond N2 (furigana)
 
 `data/furi.js` lists 97 kanji that are N1-only or unlisted on both the old-JLPT list (KANJIDIC2 levels via kanji-data) and the new-level estimates (kanji-data / OpenJLPT), and that appear in no N5–N2 OpenJLPT word (e.g. 躊躇, 饂飩, 措置, 頻繁, 曖昧), with readings for the 110 built-in words that use them. In built-in content (Combos, Drill built-in set, Similar words, Timed mock) these always show furigana, even with Furigana off. They are never tested for reading or writing: such words are left out of built-in Kanji reading/Orthography and of Combos Quiz · type / choose, and stay in flashcards, Match, lists and sentences with furigana. Your own words, chapters and grammar are unchanged; past results and Redo entries are kept.
+
+## Quiz · kanji
+
+Chapters, Combos levels, Wrong words and Add have **Quiz · kanji**: the word in kanji, large, with no reading (Furigana off for the prompt), and 4 options showing reading — meaning. Switch in the quiz: Meaning + reading (default) / Reading only / Meaning only (saved on the device). Distractors come from the same set first, then neighbouring Combos levels / your other chapters and words, preferring shared kanji and readings of the same or ±1 length; readings, meanings and spellings are all distinct. Words without kanji, and built-in beyond-N2 words, are skipped. Misses go to Wrong words; finished runs count toward ×N and History as "Quiz · kanji" and sync.
