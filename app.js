@@ -18,10 +18,20 @@ function bucharestParts(d) {
   return g;
 }
 
-function todayISO(d) {
-  var g = bucharestParts(d);
+/* The study day rolls over at 03:00 Bucharest time, not midnight:
+   take the moment, subtract 3 hours, then read the Bucharest date. */
+var DAY_ROLLOVER_HOURS = 3;
+function studyDay(d) {
+  var t = d == null ? Date.now() : (d instanceof Date ? d.getTime() : new Date(d).getTime());
+  var g = bucharestParts(new Date(t - DAY_ROLLOVER_HOURS * 3600000));
   return g.year + "-" + g.month + "-" + g.day;
 }
+function calendarDay(d) {
+  var g = bucharestParts(d == null ? new Date() : new Date(d));
+  return g.year + "-" + g.month + "-" + g.day;
+}
+/* Every "today" / day key in the app goes through studyDay. */
+function todayISO(d) { return studyDay(d); }
 
 function addDays(iso, n) {
   var p = iso.split("-").map(Number);
@@ -973,6 +983,15 @@ if (typeof document !== "undefined") {
     });
     return maxC;
   }
+  /* History line: the study day, plus the real timestamp. */
+  function fmtStudyWhen(e) {
+    var day = (e && e.day) || studyDay(e && e.at);
+    var real = fmtWhen(e && e.at).replace(" Bucharest", "");
+    if (!e || !e.at || calendarDay(e.at) === day) return real;
+    var p = day.split("-").map(Number);
+    var lbl = new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", day: "numeric", month: "short" }).format(new Date(Date.UTC(p[0], p[1] - 1, p[2])));
+    return lbl + " (study day) · " + real;
+  }
   function fmtWhen(iso) {
     try {
       return new Intl.DateTimeFormat("en-GB", {
@@ -1127,7 +1146,7 @@ if (typeof document !== "undefined") {
     if (!list.length) return h + '<p class="muted">Finished runs (to the last card or question) show up here.</p></section>';
     h += '<p class="muted">' + list.length + " finished run" + (list.length === 1 ? "" : "s") + " · " + esc(completionBreakdown(list)) + "</p><ul class=\"cp-list\">";
     list.slice(0, 200).forEach(function (e) {
-      h += "<li><span class=\"cp-when\">" + esc(fmtWhen(e.at).replace(" Bucharest", "")) + "</span> · <b>" + esc(completionName(e)) + "</b> · " + esc(COMPLETION_MODES[e.mode] || e.mode) +
+      h += "<li><span class=\"cp-when\">" + esc(fmtStudyWhen(e)) + "</span> · <b>" + esc(completionName(e)) + "</b> · " + esc(COMPLETION_MODES[e.mode] || e.mode) +
         (e.mode === "match" && e.ms != null ? " · " + fmtMs(e.ms) + " · " + (e.misses || 0) + " miss" + (e.misses === 1 ? "" : "es") : "") +
         (e.score != null ? " · " + e.score + "/" + e.total : " · " + e.total + (e.total === 1 ? " card" : " cards")) + "</li>";
     });
@@ -1421,7 +1440,7 @@ if (typeof document !== "undefined") {
     if (!list.length) return h + '<p class="muted">No timed mocks yet. Start one from Drill.</p>';
     h += '<ul class="cp-list tm-hist">';
     list.slice(0, 100).forEach(function (e) {
-      h += '<li><span class="cp-when">' + esc(fmtWhen(e.at).replace(" Bucharest", "")) + "</span> · <b>" + e.score + "/" + e.total + "</b> · " + fmtMs(e.ms) + (e.timeUp ? " (time up)" : "") + "</li>";
+      h += '<li><span class="cp-when">' + esc(fmtStudyWhen(e)) + "</span> · <b>" + e.score + "/" + e.total + "</b> · " + fmtMs(e.ms) + (e.timeUp ? " (time up)" : "") + "</li>";
     });
     return h + '</ul><p class="muted">Times are Bucharest time.</p>';
   }
@@ -4727,7 +4746,7 @@ if (typeof document !== "undefined") {
   }
   window.addEventListener("hashchange", function () { render(); });
   document.addEventListener("visibilitychange", function () {
-    if (document.visibilityState === "visible") { startActiveClock(); syncIfStale(20000); }
+    if (document.visibilityState === "visible") { checkRollover(); startActiveClock(); syncIfStale(20000); }
     else { stopActiveClock(); syncNow("hidden"); }
   });
   function syncIfStale(ms) {
@@ -4737,6 +4756,24 @@ if (typeof document !== "undefined") {
   window.addEventListener("online", function () { syncNow("online"); });
   window.addEventListener("offline", function () { if (syncToken()) setSyncMeta({ status: "offline" }); });
   setInterval(function () { if (document.visibilityState === "visible") syncIfStale(180000); }, 60000);
+  /* Study-day rollover at 03:00: credit time to the day it was spent in,
+     then refresh the Today page when the day changes. */
+  var shownStudyDay = studyDay();
+  function checkRollover() {
+    var d = studyDay();
+    if (d === shownStudyDay) return;
+    if (activeSince != null) {
+      var cut = Date.now();
+      var row = ensureDayStats(shownStudyDay);
+      row.activeMs += Math.max(0, cut - activeSince);
+      activeSince = cut;
+      saveProgress(true);
+    }
+    shownStudyDay = d;
+    var h = location.hash || "#today";
+    if (h === "#today" || h === "#") render();
+  }
+  setInterval(checkRollover, 30000);
   window.addEventListener("pageshow", function () { startActiveClock(); });
   window.addEventListener("pagehide", function () { stopActiveClock(); });
   window.addEventListener("focus", function () { startActiveClock(); syncIfStale(20000); });

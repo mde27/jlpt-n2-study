@@ -134,3 +134,7 @@ Bottom bar: Today, Drill, Chaps, Combos, More. More has tiles for Wrong, Add, Gr
 ## Quiz · kanji
 
 Chapters, Combos levels, Wrong words and Add have **Quiz · kanji**: the word in kanji, large, with no reading (Furigana off for the prompt), and 4 options showing reading — meaning. Switch in the quiz: Meaning + reading (default) / Reading only / Meaning only (saved on the device). Distractors come from the same set first, then neighbouring Combos levels / your other chapters and words, preferring shared kanji and readings of the same or ±1 length; readings, meanings and spellings are all distinct. Words without kanji, and built-in beyond-N2 words, are skipped. Misses go to Wrong words; finished runs count toward ×N and History as "Quiz · kanji" and sync.
+
+## Study day (03:00 rollover)
+
+The app's day rolls over at 03:00 Bucharest time, not midnight. One helper, `studyDay()` (now minus 3 hours, then the Bucharest date), sets every day key: daily timer and time spent, Stats and completions per day, the unit schedule and 20-a-day new words, yesterday's misses, Redo "another day", Wrong-word dedupe, Drill per day, Timed mock history and the exam countdown. Day keys saved earlier still work unchanged. In History, an event between 00:00 and 03:00 shows its study day and the real time, e.g. "15 Oct (study day) · 16 Oct 2026, 01:30".
