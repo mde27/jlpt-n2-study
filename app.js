@@ -458,6 +458,12 @@ if (typeof document !== "undefined") {
     }).catch(function () { return false; });
   }
   var progress = loadProgress();
+  /* One-time (per device) 03:00-rollover migration; safe to re-run. */
+  try {
+    var MIG_KEY = "jlpt-n2-mig-0300";
+    if (foldEarlyDay(progress)) { writeLocal(progress); }
+    if (!localStorage.getItem(MIG_KEY)) localStorage.setItem(MIG_KEY, new Date().toISOString());
+  } catch (e) {}
   try {
     if (localStorage.getItem(KEY) == null && !progressIsEmpty(progress)) writeLocal(progress);
   } catch (e) {}
@@ -472,7 +478,54 @@ if (typeof document !== "undefined") {
     });
     return out;
   }
+  /* 03:00-rollover fix-up. Old code (before v28) keyed 00:00–03:00 activity
+     under the calendar date, which is now "tomorrow" in study-day terms.
+     Narrow: acts only while we are inside that 00:00–03:00 window, only on the
+     single key studyDay()+1, and only if every timestamp tied to that key lies
+     inside the window. Moves it into studyDay(). Idempotent. */
+  var DAY_FIELDS = ["activeMs", "sessions", "quizzes", "levels", "wordsGraded", "drills", "drillQs", "drillMs"];
+  function inEarlyWindow(iso, K, sd) {
+    if (!iso) return true;
+    var t = new Date(iso).getTime();
+    if (isNaN(t)) return false;
+    return calendarDay(t) === K && studyDay(t) === sd;
+  }
+  function foldEarlyDay(p, nowMs) {
+    if (!p) return false;
+    var now = nowMs == null ? Date.now() : nowMs;
+    var sd = studyDay(now), K = addDays(sd, 1);
+    if (calendarDay(now) !== K) return false;
+    var days = (p.stats && p.stats.days) || {};
+    var lists = ["completions", "drillLog", "mockLog", "mistakes"];
+    var evs = [];
+    lists.forEach(function (n) { (p[n] || []).forEach(function (e) { if (e && e.day === K) evs.push(e); }); });
+    var row = days[K];
+    if (!row && !evs.length) return false;
+    if (row && !inEarlyWindow(row.updatedAt, K, sd)) return false;
+    for (var i = 0; i < evs.length; i++) if (!inEarlyWindow(evs[i].at || "", K, sd) || !evs[i].at) return false;
+    if (row) {
+      var dst = days[sd];
+      if (!dst) { row.date = sd; days[sd] = row; }
+      else {
+        DAY_FIELDS.forEach(function (f) { dst[f] = (dst[f] || 0) + (row[f] || 0); });
+        if (!Array.isArray(dst.levelKeys)) dst.levelKeys = [];
+        (row.levelKeys || []).forEach(function (lk) { if (dst.levelKeys.indexOf(lk) === -1) dst.levelKeys.push(lk); });
+        dst.levels = Math.max(dst.levels || 0, dst.levelKeys.length);
+      }
+      delete days[K];
+    }
+    evs.forEach(function (e) { e.day = sd; });
+    if (!p.foldedDays || typeof p.foldedDays !== "object") p.foldedDays = {};
+    p.foldedDays[K] = sd;
+    if (p.doneDays && p.doneDays[K]) { if (!p.doneDays[sd]) p.doneDays[sd] = p.doneDays[K]; delete p.doneDays[K]; }
+    (p.words || []).forEach(function (w) {
+      if (w && w.lastDay === K) w.lastDay = sd;
+      if (w && w.addedDay === K) w.addedDay = sd;
+    });
+    return true;
+  }
   function mergeProgress(a, b) {
+    try { foldEarlyDay(a); foldEarlyDay(b); } catch (e) {}
     if (!b || progressIsEmpty(b) && !(b.deleted && Object.keys(b.deleted).length)) return a;
     if (!a || progressIsEmpty(a) && !(a.deleted && Object.keys(a.deleted).length)) return normalizeProgress(b);
     var tomb = {};
@@ -493,9 +546,13 @@ if (typeof document !== "undefined") {
     (a.mistakes || []).forEach(function (m) { if (m) mk[m.at + "|" + m.wordId] = 1; });
     (b.mistakes || []).forEach(function (m) { if (m && !mk[m.at + "|" + m.wordId]) a.mistakes.push(m); });
     Object.keys(b.doneDays || {}).forEach(function (k) { if (!a.doneDays[k]) a.doneDays[k] = b.doneDays[k]; });
+    a.foldedDays = a.foldedDays || {};
+    Object.keys(b.foldedDays || {}).forEach(function (k) { a.foldedDays[k] = b.foldedDays[k]; });
     var bd = (b.stats && b.stats.days) || {};
     Object.keys(bd).forEach(function (k) {
       var x = a.stats.days[k], y = bd[k];
+      /* A key already folded into the day before (on any device) is not re-added by a stale copy. */
+      if (a.foldedDays[k] && !x && inEarlyWindow(y.updatedAt, k, a.foldedDays[k])) return;
       if (!x) { a.stats.days[k] = y; return; }
       ["activeMs", "sessions", "quizzes", "levels", "wordsGraded", "drills", "drillQs", "drillMs"].forEach(function (f) { if ((y[f] || 0) > (x[f] || 0)) x[f] = y[f]; });
       (y.levelKeys || []).forEach(function (lk) { if (!x.levelKeys) x.levelKeys = []; if (x.levelKeys.indexOf(lk) === -1) x.levelKeys.push(lk); });
@@ -747,6 +804,7 @@ if (typeof document !== "undefined") {
     if (!progress.stats.days || typeof progress.stats.days !== "object") progress.stats.days = {};
     if (!progress.stats.days[date]) progress.stats.days[date] = blankDayStats(date);
     var d = progress.stats.days[date];
+    d.updatedAt = new Date().toISOString();
     if (!Array.isArray(d.levelKeys)) d.levelKeys = [];
     ["activeMs", "sessions", "quizzes", "levels", "wordsGraded", "drills", "drillQs", "drillMs"].forEach(function (k) {
       if (d[k] == null) d[k] = 0;
@@ -3808,6 +3866,7 @@ if (typeof document !== "undefined") {
       drillLog: progress.drillLog || [],
       completions: progress.completions || [],
       mockLog: progress.mockLog || [],
+      foldedDays: progress.foldedDays || {},
       stats: progress.stats || { days: {} }
     }, null, 2)], { type: "application/json" });
     var a = document.createElement("a");
