@@ -1,5 +1,5 @@
 "use strict";
-var CACHE = "jlpt-n2-v29";
+var CACHE = "jlpt-n2-v30";
 var FILES = [
   "./",
   "./index.html",
@@ -16,7 +16,8 @@ var FILES = [
   "./data/mock.js",
   "./data/drills.js",
   "./data/similar.js",
-  "./data/furi.js"
+  "./data/furi.js",
+  "./data/plan.js"
 ];
 
 self.addEventListener("install", function (event) {

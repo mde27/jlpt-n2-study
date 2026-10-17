@@ -76,3 +76,7 @@ All 41 groups, example sentences and difference notes are original, written for 
 ## Beyond-N2 kanji (`data/furi.js`)
 
 Kanji levels: kanji-data by David Luz Gouveia (KANJIDIC2-derived old JLPT levels + new-level estimates, MIT) and OpenJLPT kanji/vocab lists (CC BY-SA 4.0). Readings: the app's own OpenJLPT/built-in data, else UniDic (unidic-lite, via fugashi, BSD). There has been no official JLPT kanji list since 2010, so levels are estimates.
+
+## Study plan (data/plan.js)
+
+Written for this app. It points to free outside material (NHK News Web, Japanese podcasts or YouTube) by name or link only. Nothing from those sources, the Speed Master book or JLPT samples is copied.

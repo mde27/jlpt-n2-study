@@ -369,6 +369,7 @@ if (typeof document !== "undefined") {
     if (!Array.isArray(data.drillLog)) data.drillLog = [];
     if (!Array.isArray(data.completions)) data.completions = [];
     if (!Array.isArray(data.mockLog)) data.mockLog = [];
+    if (!data.planMarks || typeof data.planMarks !== "object") data.planMarks = {};
     if (!data.stats || typeof data.stats !== "object") data.stats = { days: {} };
     if (!data.stats.days || typeof data.stats.days !== "object") data.stats.days = {};
     if (!data.deleted || typeof data.deleted !== "object") data.deleted = {};
@@ -542,6 +543,12 @@ if (typeof document !== "undefined") {
     a.drillLog = byIdMerge(a.drillLog, b.drillLog, tomb);
     a.completions = byIdMerge(a.completions || [], b.completions || [], tomb);
     a.mockLog = byIdMerge(a.mockLog || [], b.mockLog || [], tomb);
+    /* Plan ticks / skips: "day|task" → { v, at }; the newer change wins (so un-ticking syncs too). */
+    a.planMarks = a.planMarks || {};
+    Object.keys(b.planMarks || {}).forEach(function (k) {
+      var x = a.planMarks[k], y = b.planMarks[k];
+      if (y && (!x || String(y.at || "") > String(x.at || ""))) a.planMarks[k] = y;
+    });
     var mk = {};
     (a.mistakes || []).forEach(function (m) { if (m) mk[m.at + "|" + m.wordId] = 1; });
     (b.mistakes || []).forEach(function (m) { if (m && !mk[m.at + "|" + m.wordId]) a.mistakes.push(m); });
@@ -1428,7 +1435,7 @@ if (typeof document !== "undefined") {
       h += '<div class="dr-slots" lang="ja">';
       for (var s2 = 0; s2 < 4; s2++) {
         var ix = placed[s2], tx = ix == null ? "" : q.chunks[ix];
-        h += '<button type="button" class="dr-slot' + (s2 === 2 ? " star" : "") + (tx ? " filled" : "") + '"' + (review ? " disabled" : ' data-act="tm-unslot" data-slot="' + s2 + '"') + '><span class="dr-num">' + (s2 === 2 ? "★" : s2 + 1) + "</span>" + esc(tx) + "</button>";
+        h += '<button type="button" class="dr-slot' + (s2 === 2 ? " star" : "") + (tx ? " filled" : "") + '"' + (review ? " disabled" : ' data-act="tm-unslot" data-slot="' + s2 + '"') + '><span class="dr-num">' + (s2 === 2 ? "★" : s2 + 1) + "</span>" + (tx ? optHtml(q, tx) : "") + "</button>";
       }
       h += '<span class="dr-end">' + optHtml(q, q.end || "") + "</span></div>";
       if (!review) {
@@ -2022,7 +2029,9 @@ if (typeof document !== "undefined") {
   function drillSrcPrefs() {
     try { var o = JSON.parse(localStorage.getItem(DRILL_SRC_KEY) || "{}"); return o && typeof o === "object" ? o : {}; } catch (e) { return {}; }
   }
+  var drillOverride = null; /* set briefly by plan deep links; never saved */
   function drillSrcFor(sid) {
+    if (drillOverride && drillOverride.src && drillOverride.src[sid]) return drillOverride.src[sid];
     var v = drillSrcPrefs()[sid];
     return v === "mine" || v === "builtin" ? v : "both";
   }
@@ -2032,6 +2041,7 @@ if (typeof document !== "undefined") {
     try { localStorage.setItem(DRILL_SRC_KEY, JSON.stringify(o)); } catch (e) { /* private mode */ }
   }
   function drillImpOnly() {
+    if (drillOverride && drillOverride.imp != null) return drillOverride.imp;
     try { return localStorage.getItem(DRILL_IMP_KEY) === "1"; } catch (e) { return false; }
   }
   function setDrillImpOnly(on) {
@@ -2629,7 +2639,7 @@ if (typeof document !== "undefined") {
       for (var s = 0; s < 4; s++) {
         var idx = a ? (a.ok ? s : st.placed[s]) : st.placed[s];
         var txt = idx == null ? "" : q.chunks[idx];
-        html2 += '<button type="button" class="dr-slot' + (s === 2 ? " star" : "") + (txt ? " filled" : "") + '" data-act="dr-unslot" data-slot="' + s + '"' + (a ? " disabled" : "") + '><span class="dr-num">' + (s === 2 ? "★" : s + 1) + "</span>" + esc(txt || "") + "</button>";
+        html2 += '<button type="button" class="dr-slot' + (s === 2 ? " star" : "") + (txt ? " filled" : "") + '" data-act="dr-unslot" data-slot="' + s + '"' + (a ? " disabled" : "") + '><span class="dr-num">' + (s === 2 ? "★" : s + 1) + "</span>" + (txt ? optHtml(q, txt) : "") + "</button>";
       }
       html2 += '<span class="dr-end">' + optHtml(q, q.end || "") + "</span></div>";
       if (!a) {
@@ -2775,6 +2785,137 @@ if (typeof document !== "undefined") {
     return '<div class="backup-bar"><button type="button" class="secondary" data-act="export">Export backup</button><p class="muted">Saves jlpt-n2-progress.json (words, chapters, grammar, mistakes, stats). Import is on Add.</p></div>';
   }
 
+  /* ---------- Today's plan ---------- */
+  var PLAN_OPEN_KEY = "jlpt-n2-plan-week";
+  function planData() { return window.N2_PLAN && Array.isArray(window.N2_PLAN.days) ? window.N2_PLAN : null; }
+  function planDay(d) { var P = planData(); if (!P) return null; for (var i = 0; i < P.days.length; i++) if (P.days[i].d === d) return P.days[i]; return null; }
+  function planMark(k) { var m = progress.planMarks && progress.planMarks[k]; return !!(m && m.v); }
+  function setPlanMark(k, v) {
+    if (!progress.planMarks || typeof progress.planMarks !== "object") progress.planMarks = {};
+    progress.planMarks[k] = { v: !!v, at: new Date().toISOString() };
+    saveProgress();
+  }
+  function planSkipped(d) { return planMark(d + "|skip"); }
+  /* Important items from skipped days just before today roll forward (up to a week back),
+     unless they were ticked or today already has the same task. */
+  function planCarried(today) {
+    var out = [], have = {}, P = planDay(today);
+    if (P) P.tasks.forEach(function (t) { have[t.id] = 1; });
+    for (var i = 1; i <= 7; i++) {
+      var d = addDays(today, -i), pd = planDay(d);
+      if (!pd || !planSkipped(d)) break;
+      pd.tasks.forEach(function (t) {
+        if (!t.imp || have[t.id] || planMark(d + "|" + t.id)) return;
+        if (t.id === "sm" && P && P.ph === "tour") return; /* the paper book stays home */
+        have[t.id] = 1; out.push({ day: d, task: t });
+      });
+    }
+    return out;
+  }
+  function planDayState(d) {
+    var pd = planDay(d); if (!pd) return "none";
+    if (planSkipped(d)) return "skip";
+    var n = pd.tasks.filter(function (t) { return planMark(d + "|" + t.id); }).length;
+    return n === pd.tasks.length ? "done" : n ? "part" : "open";
+  }
+  function planProgressLine(today) {
+    var P = planData(); if (!P) return "";
+    var done = 0, skip = 0;
+    P.days.forEach(function (x) { if (x.d > today) return; var s = planDayState(x.d); if (s === "done") done++; else if (s === "skip") skip++; });
+    return "Plan: " + done + " / " + P.days.length + " days done" + (skip ? " · " + skip + " travel / skipped" : "");
+  }
+  function planFmtDay(d) {
+    var p = d.split("-").map(Number);
+    return new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", weekday: "short", day: "numeric", month: "short" }).format(new Date(Date.UTC(p[0], p[1] - 1, p[2])));
+  }
+  function planTaskHtml(day, t, carried) {
+    var k = day + "|" + t.id, on = planMark(k);
+    var h = '<li class="pl-task' + (on ? " done" : "") + '">';
+    h += '<button type="button" class="pl-tick" data-act="plan-tick" data-key="' + esc(k) + '" aria-pressed="' + (on ? "true" : "false") + '" aria-label="' + (on ? "Untick " : "Tick ") + esc(t.t) + '">' + (on ? "☑" : "☐") + "</button>";
+    h += '<span class="pl-txt"><span class="pl-name">' + esc(t.t) + (t.imp ? ' <span class="pl-imp" title="important">★</span>' : "") + "</span>";
+    h += '<span class="pl-meta">' + (t.min ? t.min + " min" : "") + (carried ? (t.min ? " · " : "") + "from " + esc(planFmtDay(day)) : "") + "</span>";
+    if (t.note) h += '<details class="pl-note"><summary>How</summary>' + esc(t.note) + "</details>";
+    h += "</span>";
+    if (t.link) {
+      if (t.link.indexOf("url:") === 0) h += '<a class="pl-go" href="' + esc(t.link.slice(4)) + '" target="_blank" rel="noopener" aria-label="Open">↗</a>';
+      else h += '<button type="button" class="pl-go" data-act="plan-go" data-link="' + esc(t.link) + '" aria-label="Go to ' + esc(t.t) + '">▸</button>';
+    }
+    return h + "</li>";
+  }
+  function planCardHtml(today) {
+    var P = planData(), pd = planDay(today);
+    if (!P || !pd) return "";
+    var P0 = P.phases || {};
+    var skipped = planSkipped(today);
+    var tot = 0; pd.tasks.forEach(function (t) { tot += t.min || 0; });
+    var h = '<section class="card plan-card" aria-label="Today\'s plan"><div class="pl-head"><h2>Today\'s plan</h2><span class="pl-when">' + esc(planFmtDay(today)) + "</span></div>";
+    h += '<p class="pl-sub">' + esc(pd.theme) + (tot ? " · ~" + tot + " min" : "") + ' · <span class="muted">' + esc(P0[pd.ph] || "") + "</span></p>";
+    if (skipped) {
+      h += '<p class="pl-skipmsg">Marked as a travel day / skipped. No problem — the ★ items move to tomorrow.</p>';
+      h += '<button type="button" class="secondary pl-skip" data-act="plan-skip" data-day="' + today + '" data-on="0">Undo skip</button>';
+    } else {
+      var carried = planCarried(today), lastB = null;
+      h += '<ul class="pl-list">';
+      pd.tasks.forEach(function (t) {
+        if (t.b && t.b !== lastB) { h += '<li class="pl-block">' + esc(t.b) + " · 20 min</li>"; lastB = t.b; }
+        h += planTaskHtml(today, t, false);
+      });
+      if (carried.length) {
+        h += '<li class="pl-block">Carried over</li>';
+        carried.forEach(function (c) { h += planTaskHtml(c.day, c.task, true); });
+      }
+      h += "</ul>";
+      h += '<button type="button" class="secondary pl-skip" data-act="plan-skip" data-day="' + today + '" data-on="1">Travel day / skip today</button>';
+    }
+    h += '<p class="pl-progress">' + esc(planProgressLine(today)) + "</p>";
+    /* week view */
+    var p = today.split("-").map(Number), wd = (new Date(Date.UTC(p[0], p[1] - 1, p[2])).getUTCDay() + 6) % 7, mon = addDays(today, -wd);
+    var open = false; try { open = localStorage.getItem(PLAN_OPEN_KEY) === "1"; } catch (e) {}
+    h += '<details class="pl-week"' + (open ? " open" : "") + "><summary>This week</summary><ul>";
+    for (var i = 0; i < 7; i++) {
+      var d = addDays(mon, i), x = planDay(d); if (!x) continue;
+      var st = planDayState(d), mins = 0; x.tasks.forEach(function (t) { mins += t.min || 0; });
+      var ico = st === "done" ? "✓" : st === "skip" ? "↷" : st === "part" ? "◐" : "○";
+      h += '<li class="pl-wk' + (d === today ? " today" : "") + '"><span class="pl-wk-ico" aria-label="' + st + '">' + ico + '</span><b>' + esc(planFmtDay(d)) + "</b> · " + esc(x.theme) + (mins ? " · ~" + mins + " min" : "");
+      h += '<span class="pl-wk-tasks">' + esc(x.tasks.map(function (t) { return t.t; }).join(" · ")) + "</span></li>";
+    }
+    h += "</ul></details></section>";
+    return h;
+  }
+  function latestChapter() {
+    var list = (progress.chapters || []).filter(function (c) { return c && (c.words || []).length >= 2; });
+    list.sort(function (a, b) { return String(b.createdAt || "").localeCompare(String(a.createdAt || "")); });
+    return list[0] || null;
+  }
+  function planGo(link) {
+    function goto(h) { if (location.hash === h) render(); else location.hash = h; }
+    if (link === "grammar" || link === "add" || link === "wrong") { goto("#" + link); return; }
+    if (link === "match") {
+      var ch = latestChapter();
+      if (!ch) { goto("#chapters"); return; }
+      location.hash = "#chapters"; startMatch("ch", ch.id); window.scrollTo(0, 0); return;
+    }
+    if (link === "mock") {
+      ensureBuiltin(); location.hash = "#drill";
+      if (builtinItems() && startTimedMock()) { render(); window.scrollTo(0, 0); }
+      return;
+    }
+    var scope = null, ov = null, page = "#drill";
+    if (link === "redo") scope = "redo";
+    else if (link === "sim") { scope = "sim"; page = "#similar"; }
+    else if (link === "gram-star") { scope = "gram"; ov = { src: { gram: "builtin" }, imp: true }; }
+    else if (link.indexOf("drill:") === 0) scope = link.slice(6);
+    if (!scope) return;
+    ensureBuiltin();
+    ui.drill = null;
+    if (location.hash !== page) location.hash = page;
+    drillOverride = ov;
+    var ok = false;
+    try { ok = !!startDrill(scope); } catch (e) { ok = false; }
+    drillOverride = null;
+    render(); window.scrollTo(0, 0);
+  }
+
   function renderHome() {
     var today = todayISO();
     var day = todayStudySummary();
@@ -2787,7 +2928,8 @@ if (typeof document !== "undefined") {
     else if (left === 1) when = "1 day to Sunday 6 December 2026.";
     else if (left === 0) when = "Sunday 6 December 2026 is today.";
     else when = "The exam date, 6 December 2026, has passed.";
-    var html = '<p class="big-count">' + (left > 0 ? left : 0) + "</p>";
+    var html = planCardHtml(today);
+    html += '<p class="big-count">' + (left > 0 ? left : 0) + "</p>";
     html += "<p>" + esc(when) + "</p>";
     html += studyBoxHtml(day);
     html += "<h1>" + esc(plan.label) + "</h1>";
@@ -3867,6 +4009,7 @@ if (typeof document !== "undefined") {
       completions: progress.completions || [],
       mockLog: progress.mockLog || [],
       foldedDays: progress.foldedDays || {},
+      planMarks: progress.planMarks || {},
       stats: progress.stats || { days: {} }
     }, null, 2)], { type: "application/json" });
     var a = document.createElement("a");
@@ -3963,6 +4106,9 @@ if (typeof document !== "undefined") {
       speakJa(audioPrefs().rate === "slow" ? "ゆっくり" : "ふつう");
       return;
     }
+    if (act === "plan-tick") { var pk = b.getAttribute("data-key"); setPlanMark(pk, !planMark(pk)); render(); return; }
+    if (act === "plan-skip") { setPlanMark(b.getAttribute("data-day") + "|skip", b.getAttribute("data-on") === "1"); render(); return; }
+    if (act === "plan-go") { planGo(b.getAttribute("data-link")); return; }
     if (act === "dr-start") {
       if (!startDrill(b.getAttribute("data-scope"))) { window.alert("No questions available here yet."); return; }
       render();
@@ -4772,6 +4918,7 @@ if (typeof document !== "undefined") {
           drillLog: Array.isArray(data.drillLog) ? data.drillLog : [],
           completions: Array.isArray(data.completions) ? data.completions : [],
           mockLog: Array.isArray(data.mockLog) ? data.mockLog : [],
+          planMarks: (data.planMarks && typeof data.planMarks === "object") ? data.planMarks : {},
           stats: (data.stats && typeof data.stats === "object") ? data.stats : { days: {} }
         });
         writeLocal(progress);
@@ -4804,6 +4951,10 @@ if (typeof document !== "undefined") {
     });
   }
   window.addEventListener("hashchange", function () { render(); });
+  document.addEventListener("toggle", function (e) {
+    var t = e.target;
+    if (t && t.classList && t.classList.contains("pl-week")) { try { localStorage.setItem(PLAN_OPEN_KEY, t.open ? "1" : "0"); } catch (err) {} }
+  }, true);
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "visible") { checkRollover(); startActiveClock(); syncIfStale(20000); }
     else { stopActiveClock(); syncNow("hidden"); }
